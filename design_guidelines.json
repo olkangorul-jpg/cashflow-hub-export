@@ -1,0 +1,100 @@
+{
+  "theme": "Light theme only",
+  "typography": {
+    "headings": {
+      "font_family": "Manrope",
+      "rationale": "Clean, professional, and confident font for a financial SaaS application without looking generic."
+    },
+    "body": {
+      "font_family": "IBM Plex Sans",
+      "rationale": "Highly legible, especially for numbers and tabular data which is critical for cash flow apps."
+    },
+    "weights": {
+      "headings": [600, 700],
+      "body": [400, 500],
+      "numbers": [500, 600]
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl tracking-tight font-bold",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-semibold",
+      "h3": "text-lg sm:text-xl tracking-tight font-semibold",
+      "body": "text-sm sm:text-base leading-relaxed",
+      "numbers_large": "text-3xl font-bold tracking-tight",
+      "labels": "text-xs font-semibold uppercase tracking-[0.1em]"
+    }
+  },
+  "colors": {
+    "archetype": "Swiss & High-Contrast (Adapted for Finance)",
+    "palette": {
+      "background": "#F8F9FA",
+      "surface": "#FFFFFF",
+      "primary_text": "#0F172A",
+      "secondary_text": "#475569",
+      "border": "#E2E8F0",
+      "brand_primary": "#0F172A",
+      "brand_primary_hover": "#1E293B",
+      "income_green": "#166534",
+      "income_green_bg": "#DCFCE7",
+      "expense_red": "#991B1B",
+      "expense_red_bg": "#FEE2E2",
+      "warning_yellow": "#CA8A04",
+      "warning_yellow_bg": "#FEF08A",
+      "info_blue": "#2563EB",
+      "info_blue_bg": "#DBEAFE"
+    },
+    "rules": [
+      "NEVER use generic #000000 or #808080. Use Slate/Charcoal shades.",
+      "No full-screen gradients. Use flat solid colors.",
+      "Always set hover text colors explicitly."
+    ]
+  },
+  "visual_enhancers": {
+    "surface_strategy": "Grid Borders (The Technical Look)",
+    "borders": "1px solid border-border (E2E8F0). Sharp or slightly rounded corners (max-rounded-md).",
+    "shadows": "Minimal. Avoid soft diffuse shadows. Use crisp 1px borders instead.",
+    "hover_states": "Slight lift (-translate-y-px), border color darkens, slight shadow-sm.",
+    "icons": "lucide-react for all iconography. Keep stroke width 1.5 or 2."
+  },
+  "grids_and_layout": {
+    "spacing_scale": "p-4, p-6 for tight data density.",
+    "dashboard_grid": "High Density Grid (grid-cols-1 md:grid-cols-3 lg:grid-cols-4) with gap-4 or gap-6.",
+    "kpi_cards": "col-span-1. F-Pattern layout. Top row: Key Metrics. Middle: Charts. Bottom: Data tables.",
+    "alignment": "Numbers right-aligned in tables, labels left-aligned. Optical alignment over geometric."
+  },
+  "components_strategy": {
+    "forms_and_inputs": "Shadcn/UI Select, Input, Checkbox. Dense styling.",
+    "tables": "Shadcn/UI Table. Alternating row colors or simple border-b. Sticky headers if possible.",
+    "charts": "Recharts. Use clean lines, no heavy gradients. Tooltips must be fast.",
+    "modals": "Shadcn/UI Dialog for Add Expense, Add Check, Add Promissory Note.",
+    "tabs": "Shadcn/UI Tabs for filtering (e.g., Received vs Issued Checks, Monthly vs Yearly). Override fixed heights."
+  },
+  "motion_and_interactions": {
+    "hover": "Subtle transition on background color for list items (transition-colors duration-200).",
+    "entrance": "Staggered fade-in for dashboard widgets.",
+    "loading": "Skeleton loaders for data tables rather than spinners."
+  },
+  "accessibility": {
+    "contrast": "Ensure text over colored badges (green/red) has >= 4.5:1 ratio.",
+    "focus": "focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:outline-none.",
+    "testing": "All interactive elements MUST have data-testid (e.g., data-testid='add-expense-button', data-testid='export-csv-button')."
+  },
+  "image_urls": {
+    "avatar": {
+      "url": "https://images.unsplash.com/photo-1527980965255-d3b416303d12?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzV8MHwxfHNlYXJjaHwxfHxhdmF0YXIlMjBwb3J0cmFpdCUyMHByb2Zlc3Npb25hbHxlbnwwfHx8fDE3ODM5MzU4Mjd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Professional smiling man for user profile avatar",
+      "category": "user_avatar"
+    }
+  },
+  "universal_guidelines_for_main_agent": [
+    "You tend to converge toward generic, 'on distribution' outputs. Avoid this: make creative, distinctive frontends.",
+    "Do not use dark colors as gradients.",
+    "Do not center align the app container (.App { text-align: center; } is banned).",
+    "NEVER use AI assistant Emoji characters (🤖🧠💭💡🔮🎯) for icons.",
+    "Every interaction needs micro-animations - hover states, transitions. Do NOT apply universal transition: all.",
+    "Use 2-3x more spacing. Ensure data tables have enough breathing room.",
+    "Prioritize using pre-existing components from src/components/ui.",
+    "Use sonner for toast notifications.",
+    "Make sure the UI is in Turkish as requested by the user.",
+    "Ensure the Excel/CSV export functionality is visibly accessible (usually a button top right of tables)."
+  ]
+}
