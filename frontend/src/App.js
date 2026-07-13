@@ -14,6 +14,7 @@ import Expenses from "@/pages/Expenses";
 import Incomes from "@/pages/Incomes";
 import UpcomingPayments from "@/pages/UpcomingPayments";
 import Settings from "@/pages/Settings";
+import Team from "@/pages/Team";
 
 function AppRouter() {
   const location = useLocation();
@@ -33,6 +34,7 @@ function AppRouter() {
         <Route path="/expenses" element={<Expenses />} />
         <Route path="/incomes" element={<Incomes />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/team" element={<Team />} />
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

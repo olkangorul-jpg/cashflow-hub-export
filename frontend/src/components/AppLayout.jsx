@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
+import WorkspaceSwitcher from "@/components/WorkspaceSwitcher";
 import {
   LayoutDashboard,
   Landmark,
@@ -11,6 +12,7 @@ import {
   CalendarClock,
   LogOut,
   Settings as SettingsIcon,
+  Users,
 } from "lucide-react";
 
 const NAV = [
@@ -21,6 +23,7 @@ const NAV = [
   { to: "/notes", label: "Senetler", icon: ScrollText, testid: "nav-notes" },
   { to: "/expenses", label: "Giderler", icon: Receipt, testid: "nav-expenses" },
   { to: "/incomes", label: "Gelirler", icon: TrendingUp, testid: "nav-incomes" },
+  { to: "/team", label: "Ekip", icon: Users, testid: "nav-team" },
   { to: "/settings", label: "Ayarlar", icon: SettingsIcon, testid: "nav-settings" },
 ];
 
@@ -105,7 +108,8 @@ export default function AppLayout() {
           </header>
 
           {/* Desktop top bar */}
-          <header className="hidden lg:flex items-center justify-end px-8 py-4 border-b border-slate-200 bg-white gap-2">
+          <header className="hidden lg:flex items-center justify-end px-8 py-4 border-b border-slate-200 bg-white gap-3">
+            <WorkspaceSwitcher />
             <NotificationBell />
           </header>
 

@@ -40,6 +40,31 @@ class User(BaseModel):
     name: str
     picture: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Computed at auth time (not stored):
+    data_owner_id: str = ""  # workspace owner (self OR shared workspace owner)
+    workspace_id: str = ""
+    workspace_name: str = ""
+    role: Literal["owner", "editor", "viewer"] = "owner"
+
+
+class Workspace(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    workspace_id: str
+    owner_user_id: str
+    name: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WorkspaceMember(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    workspace_id: str
+    user_id: Optional[str] = None
+    email: str
+    name: Optional[str] = None
+    role: Literal["owner", "editor", "viewer"]
+    status: Literal["pending", "active"]
+    invited_at: datetime
 
 
 class BankAccount(BaseModel):
@@ -151,6 +176,53 @@ class IncomeCreate(BaseModel):
 
 
 # ---------------- Auth Helpers ----------------
+async def _ensure_personal_workspace(user_id: str, name: str) -> str:
+    ws = await db.workspaces.find_one({"owner_user_id": user_id}, {"_id": 0})
+    if ws:
+        return ws["workspace_id"]
+    wid = f"ws_{uuid.uuid4().hex[:12]}"
+    await db.workspaces.insert_one({
+        "workspace_id": wid,
+        "owner_user_id": user_id,
+        "name": name or "Kişisel Alan",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return wid
+
+
+async def _accept_pending_invites(user_id: str, email: str, name: str):
+    pending = await db.workspace_members.find(
+        {"email": email.lower(), "status": "pending"}, {"_id": 0}
+    ).to_list(100)
+    for m in pending:
+        await db.workspace_members.update_one(
+            {"id": m["id"]},
+            {"$set": {"user_id": user_id, "name": name, "status": "active", "accepted_at": datetime.now(timezone.utc).isoformat()}},
+        )
+
+
+async def _resolve_workspace_context(user_doc: dict):
+    """Return (data_owner_id, workspace_id, workspace_name, role) based on active_workspace_id."""
+    uid = user_doc["user_id"]
+    active_ws_id = user_doc.get("active_workspace_id")
+
+    if active_ws_id:
+        ws = await db.workspaces.find_one({"workspace_id": active_ws_id}, {"_id": 0})
+        if ws:
+            if ws["owner_user_id"] == uid:
+                return uid, ws["workspace_id"], ws["name"], "owner"
+            # shared workspace — verify membership
+            member = await db.workspace_members.find_one(
+                {"workspace_id": active_ws_id, "user_id": uid, "status": "active"}, {"_id": 0}
+            )
+            if member:
+                return ws["owner_user_id"], ws["workspace_id"], ws["name"], member["role"]
+    # fallback: personal workspace
+    personal_ws_id = await _ensure_personal_workspace(uid, user_doc.get("name") + " - Kişisel" if user_doc.get("name") else "Kişisel Alan")
+    ws = await db.workspaces.find_one({"workspace_id": personal_ws_id}, {"_id": 0})
+    return uid, personal_ws_id, ws["name"] if ws else "Kişisel Alan", "owner"
+
+
 async def get_current_user(request: Request) -> User:
     # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     token = request.cookies.get("session_token")
@@ -176,7 +248,23 @@ async def get_current_user(request: Request) -> User:
     user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
     if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
-    return User(**user_doc)
+
+    data_owner_id, workspace_id, workspace_name, role = await _resolve_workspace_context(user_doc)
+    return User(
+        user_id=user_doc["user_id"],
+        email=user_doc.get("email", ""),
+        name=user_doc.get("name", ""),
+        picture=user_doc.get("picture"),
+        data_owner_id=data_owner_id,
+        workspace_id=workspace_id,
+        workspace_name=workspace_name,
+        role=role,
+    )
+
+
+def require_write(user: User):
+    if user.role == "viewer":
+        raise HTTPException(status_code=403, detail="Bu workspace'de salt okur yetkiniz var")
 
 
 # ---------------- Auth Routes ----------------
@@ -214,6 +302,10 @@ async def create_session(payload: SessionExchange, response: Response):
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
 
+    # Ensure personal workspace and auto-accept any pending invites
+    await _ensure_personal_workspace(user_id, f"{name} - Kişisel" if name else "Kişisel Alan")
+    await _accept_pending_invites(user_id, email, name)
+
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({
         "user_id": user_id, "session_token": session_token,
@@ -231,7 +323,15 @@ async def create_session(payload: SessionExchange, response: Response):
 
 @api_router.get("/auth/me")
 async def me(user: User = Depends(get_current_user)):
-    return {"user_id": user.user_id, "email": user.email, "name": user.name, "picture": user.picture}
+    return {
+        "user_id": user.user_id,
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture,
+        "workspace_id": user.workspace_id,
+        "workspace_name": user.workspace_name,
+        "role": user.role,
+    }
 
 
 @api_router.post("/auth/logout")
@@ -243,16 +343,183 @@ async def logout(request: Request, response: Response):
     return {"ok": True}
 
 
+# ---------------- Workspaces / Team ----------------
+class InviteRequest(BaseModel):
+    email: str
+    role: Literal["editor", "viewer"] = "editor"
+
+
+class SwitchWorkspaceRequest(BaseModel):
+    workspace_id: str
+
+
+class RenameWorkspaceRequest(BaseModel):
+    name: str
+
+
+@api_router.get("/workspaces")
+async def list_workspaces(user: User = Depends(get_current_user)):
+    # Own workspaces
+    owned = await db.workspaces.find({"owner_user_id": user.user_id}, {"_id": 0}).to_list(100)
+    # Workspaces where user is a member (accepted)
+    memberships = await db.workspace_members.find(
+        {"user_id": user.user_id, "status": "active"}, {"_id": 0}
+    ).to_list(100)
+    shared_ids = [m["workspace_id"] for m in memberships]
+    shared = []
+    if shared_ids:
+        shared = await db.workspaces.find({"workspace_id": {"$in": shared_ids}}, {"_id": 0}).to_list(100)
+
+    def _fmt(ws, role):
+        return {
+            "workspace_id": ws["workspace_id"],
+            "name": ws["name"],
+            "owner_user_id": ws["owner_user_id"],
+            "role": role,
+            "is_active": ws["workspace_id"] == user.workspace_id,
+        }
+
+    items = [_fmt(w, "owner") for w in owned]
+    m_by_ws = {m["workspace_id"]: m for m in memberships}
+    for w in shared:
+        items.append(_fmt(w, m_by_ws.get(w["workspace_id"], {}).get("role", "viewer")))
+    return items
+
+
+@api_router.post("/workspaces/switch")
+async def switch_workspace(payload: SwitchWorkspaceRequest, user: User = Depends(get_current_user)):
+    wid = payload.workspace_id
+    ws = await db.workspaces.find_one({"workspace_id": wid}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace bulunamadı")
+    if ws["owner_user_id"] != user.user_id:
+        member = await db.workspace_members.find_one(
+            {"workspace_id": wid, "user_id": user.user_id, "status": "active"}, {"_id": 0}
+        )
+        if not member:
+            raise HTTPException(status_code=403, detail="Yetkiniz yok")
+    await db.users.update_one({"user_id": user.user_id}, {"$set": {"active_workspace_id": wid}})
+    return {"ok": True, "workspace_id": wid}
+
+
+@api_router.put("/workspaces/{workspace_id}/rename")
+async def rename_workspace(workspace_id: str, payload: RenameWorkspaceRequest, user: User = Depends(get_current_user)):
+    ws = await db.workspaces.find_one({"workspace_id": workspace_id, "owner_user_id": user.user_id}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=403, detail="Sadece sahibi yeniden adlandırabilir")
+    name = (payload.name or "").strip()[:60]
+    if not name:
+        raise HTTPException(status_code=400, detail="İsim boş olamaz")
+    await db.workspaces.update_one({"workspace_id": workspace_id}, {"$set": {"name": name}})
+    return {"ok": True, "name": name}
+
+
+@api_router.get("/workspaces/{workspace_id}/members")
+async def list_members(workspace_id: str, user: User = Depends(get_current_user)):
+    ws = await db.workspaces.find_one({"workspace_id": workspace_id}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace bulunamadı")
+    # Only owner or an active member can view
+    if ws["owner_user_id"] != user.user_id:
+        m = await db.workspace_members.find_one({"workspace_id": workspace_id, "user_id": user.user_id, "status": "active"}, {"_id": 0})
+        if not m:
+            raise HTTPException(status_code=403, detail="Yetkiniz yok")
+    owner_doc = await db.users.find_one({"user_id": ws["owner_user_id"]}, {"_id": 0})
+    members = await db.workspace_members.find({"workspace_id": workspace_id}, {"_id": 0}).to_list(200)
+    result = [{
+        "id": "owner",
+        "email": owner_doc.get("email") if owner_doc else "",
+        "name": owner_doc.get("name") if owner_doc else "",
+        "role": "owner",
+        "status": "active",
+    }]
+    for m in members:
+        result.append({
+            "id": m["id"], "email": m["email"], "name": m.get("name"),
+            "role": m["role"], "status": m["status"],
+        })
+    return result
+
+
+@api_router.post("/workspaces/{workspace_id}/invite")
+async def invite_member(workspace_id: str, payload: InviteRequest, user: User = Depends(get_current_user)):
+    ws = await db.workspaces.find_one({"workspace_id": workspace_id, "owner_user_id": user.user_id}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=403, detail="Sadece sahibi davet gönderebilir")
+    email = (payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Geçersiz email")
+    if email == user.email.lower():
+        raise HTTPException(status_code=400, detail="Kendinizi davet edemezsiniz")
+
+    # If already invited to this workspace, update role
+    existing = await db.workspace_members.find_one({"workspace_id": workspace_id, "email": email}, {"_id": 0})
+    if existing:
+        await db.workspace_members.update_one(
+            {"id": existing["id"]}, {"$set": {"role": payload.role}}
+        )
+        member_id = existing["id"]
+        status = existing["status"]
+    else:
+        member_id = f"mem_{uuid.uuid4().hex[:12]}"
+        # Check if invitee already has an account
+        existing_user = await db.users.find_one({"email": email}, {"_id": 0})
+        status = "active" if existing_user else "pending"
+        await db.workspace_members.insert_one({
+            "id": member_id,
+            "workspace_id": workspace_id,
+            "user_id": existing_user["user_id"] if existing_user else None,
+            "email": email,
+            "name": existing_user.get("name") if existing_user else None,
+            "role": payload.role,
+            "status": status,
+            "invited_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    # Send invite email (best-effort)
+    invite_url = os.environ.get("APP_URL", "").rstrip("/") or ""
+    login_link = f"{invite_url}/login" if invite_url else "https://cashflow-hub-444.emergent.host/login"
+    html = f"""
+    <html><body style="margin:0;background:#F8F9FA;padding:24px;font-family:Arial,sans-serif;">
+      <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #E2E8F0;border-radius:6px;">
+        <tr><td style="padding:24px;border-bottom:1px solid #E2E8F0;">
+          <h1 style="margin:0;font-size:20px;color:#0F172A;">Nakit Akış'a Davet Edildiniz</h1>
+        </td></tr>
+        <tr><td style="padding:24px;color:#334155;font-size:14px;line-height:1.6;">
+          <p><strong>{user.name}</strong> sizi <strong>{ws['name']}</strong> workspace'ine <strong>{payload.role}</strong> yetkisi ile davet etti.</p>
+          <p>Aşağıdaki bağlantı ile Google hesabınız ({email}) üzerinden giriş yaptığınızda otomatik olarak workspace'e katılırsınız.</p>
+          <p style="margin:24px 0;">
+            <a href="{login_link}" style="background:#0F172A;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Giriş Yap ve Katıl</a>
+          </p>
+        </td></tr>
+      </table>
+    </body></html>
+    """
+    await _send_email(email, f"{user.name} sizi Nakit Akış'a davet etti", html)
+    return {"ok": True, "member_id": member_id, "status": status}
+
+
+@api_router.delete("/workspaces/{workspace_id}/members/{member_id}")
+async def remove_member(workspace_id: str, member_id: str, user: User = Depends(get_current_user)):
+    ws = await db.workspaces.find_one({"workspace_id": workspace_id, "owner_user_id": user.user_id}, {"_id": 0})
+    if not ws:
+        raise HTTPException(status_code=403, detail="Sadece sahibi üye çıkarabilir")
+    if member_id == "owner":
+        raise HTTPException(status_code=400, detail="Sahibi kaldırılamaz")
+    await db.workspace_members.delete_one({"id": member_id, "workspace_id": workspace_id})
+    return {"ok": True}
+
+
 # ---------------- Bank Accounts ----------------
 @api_router.get("/bank-accounts", response_model=List[BankAccount])
 async def list_bank_accounts(user: User = Depends(get_current_user)):
-    docs = await db.bank_accounts.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    docs = await db.bank_accounts.find({"user_id": user.data_owner_id}, {"_id": 0}).to_list(1000)
     return [BankAccount(**d) for d in docs]
 
 
 @api_router.post("/bank-accounts", response_model=BankAccount)
 async def create_bank_account(payload: BankAccountCreate, user: User = Depends(get_current_user)):
-    obj = BankAccount(user_id=user.user_id, **payload.model_dump())
+    obj = BankAccount(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.bank_accounts.insert_one(d)
@@ -262,7 +529,7 @@ async def create_bank_account(payload: BankAccountCreate, user: User = Depends(g
 @api_router.put("/bank-accounts/{account_id}", response_model=BankAccount)
 async def update_bank_account(account_id: str, payload: BankAccountCreate, user: User = Depends(get_current_user)):
     res = await db.bank_accounts.update_one(
-        {"id": account_id, "user_id": user.user_id},
+        {"id": account_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
@@ -273,7 +540,7 @@ async def update_bank_account(account_id: str, payload: BankAccountCreate, user:
 
 @api_router.delete("/bank-accounts/{account_id}")
 async def delete_bank_account(account_id: str, user: User = Depends(get_current_user)):
-    await db.bank_accounts.delete_one({"id": account_id, "user_id": user.user_id})
+    await db.bank_accounts.delete_one({"id": account_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
 
@@ -284,7 +551,7 @@ async def list_checks(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
-    q = {"user_id": user.user_id}
+    q = {"user_id": user.data_owner_id}
     if start_date or end_date:
         q["due_date"] = {}
         if start_date:
@@ -297,7 +564,7 @@ async def list_checks(
 
 @api_router.post("/checks", response_model=Check)
 async def create_check(payload: CheckCreate, user: User = Depends(get_current_user)):
-    obj = Check(user_id=user.user_id, **payload.model_dump())
+    obj = Check(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.checks.insert_one(d)
@@ -307,7 +574,7 @@ async def create_check(payload: CheckCreate, user: User = Depends(get_current_us
 @api_router.put("/checks/{check_id}", response_model=Check)
 async def update_check(check_id: str, payload: CheckCreate, user: User = Depends(get_current_user)):
     res = await db.checks.update_one(
-        {"id": check_id, "user_id": user.user_id},
+        {"id": check_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
@@ -318,7 +585,7 @@ async def update_check(check_id: str, payload: CheckCreate, user: User = Depends
 
 @api_router.delete("/checks/{check_id}")
 async def delete_check(check_id: str, user: User = Depends(get_current_user)):
-    await db.checks.delete_one({"id": check_id, "user_id": user.user_id})
+    await db.checks.delete_one({"id": check_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
 
@@ -329,7 +596,7 @@ async def list_notes(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
-    q = {"user_id": user.user_id}
+    q = {"user_id": user.data_owner_id}
     if start_date or end_date:
         q["due_date"] = {}
         if start_date:
@@ -342,7 +609,7 @@ async def list_notes(
 
 @api_router.post("/promissory-notes", response_model=PromissoryNote)
 async def create_note(payload: PromissoryNoteCreate, user: User = Depends(get_current_user)):
-    obj = PromissoryNote(user_id=user.user_id, **payload.model_dump())
+    obj = PromissoryNote(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.promissory_notes.insert_one(d)
@@ -352,7 +619,7 @@ async def create_note(payload: PromissoryNoteCreate, user: User = Depends(get_cu
 @api_router.put("/promissory-notes/{note_id}", response_model=PromissoryNote)
 async def update_note(note_id: str, payload: PromissoryNoteCreate, user: User = Depends(get_current_user)):
     res = await db.promissory_notes.update_one(
-        {"id": note_id, "user_id": user.user_id},
+        {"id": note_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
@@ -363,7 +630,7 @@ async def update_note(note_id: str, payload: PromissoryNoteCreate, user: User = 
 
 @api_router.delete("/promissory-notes/{note_id}")
 async def delete_note(note_id: str, user: User = Depends(get_current_user)):
-    await db.promissory_notes.delete_one({"id": note_id, "user_id": user.user_id})
+    await db.promissory_notes.delete_one({"id": note_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
 
@@ -374,7 +641,7 @@ async def list_expenses(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
-    q = {"user_id": user.user_id}
+    q = {"user_id": user.data_owner_id}
     if start_date or end_date:
         q["date"] = {}
         if start_date:
@@ -387,7 +654,7 @@ async def list_expenses(
 
 @api_router.post("/expenses", response_model=Expense)
 async def create_expense(payload: ExpenseCreate, user: User = Depends(get_current_user)):
-    obj = Expense(user_id=user.user_id, **payload.model_dump())
+    obj = Expense(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.expenses.insert_one(d)
@@ -397,7 +664,7 @@ async def create_expense(payload: ExpenseCreate, user: User = Depends(get_curren
 @api_router.put("/expenses/{expense_id}", response_model=Expense)
 async def update_expense(expense_id: str, payload: ExpenseCreate, user: User = Depends(get_current_user)):
     res = await db.expenses.update_one(
-        {"id": expense_id, "user_id": user.user_id},
+        {"id": expense_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
@@ -408,7 +675,7 @@ async def update_expense(expense_id: str, payload: ExpenseCreate, user: User = D
 
 @api_router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str, user: User = Depends(get_current_user)):
-    await db.expenses.delete_one({"id": expense_id, "user_id": user.user_id})
+    await db.expenses.delete_one({"id": expense_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
 
@@ -419,7 +686,7 @@ async def list_incomes(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ):
-    q = {"user_id": user.user_id}
+    q = {"user_id": user.data_owner_id}
     if start_date or end_date:
         q["date"] = {}
         if start_date:
@@ -432,7 +699,7 @@ async def list_incomes(
 
 @api_router.post("/incomes", response_model=Income)
 async def create_income(payload: IncomeCreate, user: User = Depends(get_current_user)):
-    obj = Income(user_id=user.user_id, **payload.model_dump())
+    obj = Income(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.incomes.insert_one(d)
@@ -442,7 +709,7 @@ async def create_income(payload: IncomeCreate, user: User = Depends(get_current_
 @api_router.put("/incomes/{income_id}", response_model=Income)
 async def update_income(income_id: str, payload: IncomeCreate, user: User = Depends(get_current_user)):
     res = await db.incomes.update_one(
-        {"id": income_id, "user_id": user.user_id},
+        {"id": income_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
@@ -453,14 +720,14 @@ async def update_income(income_id: str, payload: IncomeCreate, user: User = Depe
 
 @api_router.delete("/incomes/{income_id}")
 async def delete_income(income_id: str, user: User = Depends(get_current_user)):
-    await db.incomes.delete_one({"id": income_id, "user_id": user.user_id})
+    await db.incomes.delete_one({"id": income_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
 
 # ---------------- Dashboard / Analytics ----------------
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(user: User = Depends(get_current_user)):
-    uid = user.user_id
+    uid = user.data_owner_id
     accounts = await db.bank_accounts.find({"user_id": uid}, {"_id": 0}).to_list(1000)
     total_balance = sum(a.get("balance", 0.0) for a in accounts)
 
@@ -578,25 +845,25 @@ def _stream_csv(rows: List[dict], headers: List[str], filename: str):
 
 @api_router.get("/export/checks")
 async def export_checks(user: User = Depends(get_current_user)):
-    docs = await db.checks.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+    docs = await db.checks.find({"user_id": user.data_owner_id}, {"_id": 0}).to_list(5000)
     return _stream_csv(docs, ["type", "party", "amount", "due_date", "bank_name", "check_number", "status", "notes"], "cekler.csv")
 
 
 @api_router.get("/export/promissory-notes")
 async def export_notes(user: User = Depends(get_current_user)):
-    docs = await db.promissory_notes.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+    docs = await db.promissory_notes.find({"user_id": user.data_owner_id}, {"_id": 0}).to_list(5000)
     return _stream_csv(docs, ["type", "party", "amount", "due_date", "status", "notes"], "senetler.csv")
 
 
 @api_router.get("/export/expenses")
 async def export_expenses(user: User = Depends(get_current_user)):
-    docs = await db.expenses.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+    docs = await db.expenses.find({"user_id": user.data_owner_id}, {"_id": 0}).to_list(5000)
     return _stream_csv(docs, ["category", "description", "amount", "date", "bank_account_id"], "giderler.csv")
 
 
 @api_router.get("/export/incomes")
 async def export_incomes(user: User = Depends(get_current_user)):
-    docs = await db.incomes.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+    docs = await db.incomes.find({"user_id": user.data_owner_id}, {"_id": 0}).to_list(5000)
     return _stream_csv(docs, ["source", "description", "amount", "date", "bank_account_id"], "gelirler.csv")
 
 
@@ -645,7 +912,7 @@ async def report_pdf(
     if not end_date:
         end_date = today.isoformat()
 
-    uid = user.user_id
+    uid = user.data_owner_id
 
     def _in_range(d):
         return start_date <= d <= end_date
