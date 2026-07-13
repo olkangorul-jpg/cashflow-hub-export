@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { formatTRY, formatDate, daysUntil } from "@/lib/format";
 import { PageHeader } from "@/components/PageHeader";
 import { ExportButton } from "@/components/ExportButton";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,9 +31,16 @@ export default function Checks() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
+  const [range, setRange] = useState({ startDate: "", endDate: "" });
 
-  const load = async () => { const { data } = await api.get("/checks"); setItems(data); };
-  useEffect(() => { load(); }, []);
+  const load = async () => {
+    const params = {};
+    if (range.startDate) params.start_date = range.startDate;
+    if (range.endDate) params.end_date = range.endDate;
+    const { data } = await api.get("/checks", { params });
+    setItems(data);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range.startDate, range.endDate]);
 
   const submit = async () => {
     if (!form.party || !form.due_date || !form.amount) return toast.error("Zorunlu alanları doldurun");
@@ -132,6 +140,13 @@ export default function Checks() {
           <TabsTrigger value="issued" data-testid="tab-issued">Verilen</TabsTrigger>
         </TabsList>
       </Tabs>
+
+      <DateRangeFilter
+        startDate={range.startDate}
+        endDate={range.endDate}
+        onChange={setRange}
+        testidPrefix="checks-date"
+      />
 
       <Card className="border-slate-200 rounded-md shadow-none">
         <CardContent className="p-0">

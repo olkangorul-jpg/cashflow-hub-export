@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { formatTRY, formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/PageHeader";
 import { ExportButton } from "@/components/ExportButton";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,9 +23,16 @@ export default function Expenses() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
+  const [range, setRange] = useState({ startDate: "", endDate: "" });
 
-  const load = async () => { const { data } = await api.get("/expenses"); setItems(data); };
-  useEffect(() => { load(); }, []);
+  const load = async () => {
+    const params = {};
+    if (range.startDate) params.start_date = range.startDate;
+    if (range.endDate) params.end_date = range.endDate;
+    const { data } = await api.get("/expenses", { params });
+    setItems(data);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range.startDate, range.endDate]);
 
   const submit = async () => {
     if (!form.description || !form.amount) return toast.error("Zorunlu alanları doldurun");
@@ -88,6 +96,13 @@ export default function Expenses() {
           <p className="text-xs text-slate-500 mt-1">{items.length} kayıt</p>
         </CardContent>
       </Card>
+
+      <DateRangeFilter
+        startDate={range.startDate}
+        endDate={range.endDate}
+        onChange={setRange}
+        testidPrefix="expenses-date"
+      />
 
       <Card className="border-slate-200 rounded-md shadow-none">
         <CardContent className="p-0">

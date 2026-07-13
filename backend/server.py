@@ -279,8 +279,19 @@ async def delete_bank_account(account_id: str, user: User = Depends(get_current_
 
 # ---------------- Checks ----------------
 @api_router.get("/checks", response_model=List[Check])
-async def list_checks(user: User = Depends(get_current_user)):
-    docs = await db.checks.find({"user_id": user.user_id}, {"_id": 0}).sort("due_date", 1).to_list(2000)
+async def list_checks(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    q = {"user_id": user.user_id}
+    if start_date or end_date:
+        q["due_date"] = {}
+        if start_date:
+            q["due_date"]["$gte"] = start_date
+        if end_date:
+            q["due_date"]["$lte"] = end_date
+    docs = await db.checks.find(q, {"_id": 0}).sort("due_date", 1).to_list(2000)
     return [Check(**d) for d in docs]
 
 
@@ -313,8 +324,19 @@ async def delete_check(check_id: str, user: User = Depends(get_current_user)):
 
 # ---------------- Promissory Notes ----------------
 @api_router.get("/promissory-notes", response_model=List[PromissoryNote])
-async def list_notes(user: User = Depends(get_current_user)):
-    docs = await db.promissory_notes.find({"user_id": user.user_id}, {"_id": 0}).sort("due_date", 1).to_list(2000)
+async def list_notes(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    q = {"user_id": user.user_id}
+    if start_date or end_date:
+        q["due_date"] = {}
+        if start_date:
+            q["due_date"]["$gte"] = start_date
+        if end_date:
+            q["due_date"]["$lte"] = end_date
+    docs = await db.promissory_notes.find(q, {"_id": 0}).sort("due_date", 1).to_list(2000)
     return [PromissoryNote(**d) for d in docs]
 
 
@@ -347,8 +369,19 @@ async def delete_note(note_id: str, user: User = Depends(get_current_user)):
 
 # ---------------- Expenses ----------------
 @api_router.get("/expenses", response_model=List[Expense])
-async def list_expenses(user: User = Depends(get_current_user)):
-    docs = await db.expenses.find({"user_id": user.user_id}, {"_id": 0}).sort("date", -1).to_list(2000)
+async def list_expenses(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    q = {"user_id": user.user_id}
+    if start_date or end_date:
+        q["date"] = {}
+        if start_date:
+            q["date"]["$gte"] = start_date
+        if end_date:
+            q["date"]["$lte"] = end_date
+    docs = await db.expenses.find(q, {"_id": 0}).sort("date", -1).to_list(2000)
     return [Expense(**d) for d in docs]
 
 
@@ -381,8 +414,19 @@ async def delete_expense(expense_id: str, user: User = Depends(get_current_user)
 
 # ---------------- Incomes ----------------
 @api_router.get("/incomes", response_model=List[Income])
-async def list_incomes(user: User = Depends(get_current_user)):
-    docs = await db.incomes.find({"user_id": user.user_id}, {"_id": 0}).sort("date", -1).to_list(2000)
+async def list_incomes(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    q = {"user_id": user.user_id}
+    if start_date or end_date:
+        q["date"] = {}
+        if start_date:
+            q["date"]["$gte"] = start_date
+        if end_date:
+            q["date"]["$lte"] = end_date
+    docs = await db.incomes.find(q, {"_id": 0}).sort("date", -1).to_list(2000)
     return [Income(**d) for d in docs]
 
 
@@ -554,6 +598,221 @@ async def export_expenses(user: User = Depends(get_current_user)):
 async def export_incomes(user: User = Depends(get_current_user)):
     docs = await db.incomes.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
     return _stream_csv(docs, ["source", "description", "amount", "date", "bank_account_id"], "gelirler.csv")
+
+
+# ---------------- PDF Report ----------------
+_PDF_FONT_REGISTERED = False
+
+
+def _register_pdf_font():
+    global _PDF_FONT_REGISTERED
+    if _PDF_FONT_REGISTERED:
+        return
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.rl_config import defaultPageSize  # noqa
+    import reportlab
+    base = Path(reportlab.__file__).parent / "fonts"
+    pdfmetrics.registerFont(TTFont("Vera", str(base / "Vera.ttf")))
+    pdfmetrics.registerFont(TTFont("Vera-Bold", str(base / "VeraBd.ttf")))
+    _PDF_FONT_REGISTERED = True
+
+
+def _fmt_try(v: float) -> str:
+    s = f"{v:,.2f}"
+    # Turkish format: 1.234,56
+    return s.replace(",", "X").replace(".", ",").replace("X", ".") + " ₺"
+
+
+@api_router.get("/reports/pdf")
+async def report_pdf(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+
+    _register_pdf_font()
+
+    # Default: current month
+    today = datetime.now(timezone.utc).date()
+    if not start_date:
+        start_date = today.replace(day=1).isoformat()
+    if not end_date:
+        end_date = today.isoformat()
+
+    uid = user.user_id
+
+    def _in_range(d):
+        return start_date <= d <= end_date
+
+    incomes = [i for i in await db.incomes.find({"user_id": uid}, {"_id": 0}).to_list(5000) if _in_range(i["date"])]
+    expenses = [e for e in await db.expenses.find({"user_id": uid}, {"_id": 0}).to_list(5000) if _in_range(e["date"])]
+    checks = [c for c in await db.checks.find({"user_id": uid}, {"_id": 0}).to_list(5000) if _in_range(c["due_date"])]
+    notes = [n for n in await db.promissory_notes.find({"user_id": uid}, {"_id": 0}).to_list(5000) if _in_range(n["due_date"])]
+    accounts = await db.bank_accounts.find({"user_id": uid}, {"_id": 0}).to_list(5000)
+
+    total_income = sum(i["amount"] for i in incomes)
+    total_expense = sum(e["amount"] for e in expenses)
+    total_balance = sum(a.get("balance", 0.0) for a in accounts)
+    net = total_income - total_expense
+
+    # Build PDF
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontName="Vera-Bold", fontSize=20, textColor=colors.HexColor("#0F172A"), spaceAfter=6)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontName="Vera-Bold", fontSize=13, textColor=colors.HexColor("#0F172A"), spaceBefore=12, spaceAfter=8)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontName="Vera", fontSize=10, textColor=colors.HexColor("#334155"))
+    meta = ParagraphStyle("meta", parent=styles["BodyText"], fontName="Vera", fontSize=9, textColor=colors.HexColor("#64748B"))
+
+    story = []
+    story.append(Paragraph("Nakit Akış Raporu", h1))
+    story.append(Paragraph(
+        f"Dönem: <b>{start_date}</b> — <b>{end_date}</b> · Oluşturuldu: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')}",
+        meta,
+    ))
+    story.append(Paragraph(f"Kullanıcı: {user.name} ({user.email})", meta))
+    story.append(Spacer(1, 0.5 * cm))
+
+    # KPI Table
+    kpi_data = [
+        ["Toplam Bakiye (Tüm Hesaplar)", _fmt_try(total_balance)],
+        ["Dönem Geliri", _fmt_try(total_income)],
+        ["Dönem Gideri", _fmt_try(total_expense)],
+        ["Net", _fmt_try(net)],
+    ]
+    kpi_table = Table(kpi_data, colWidths=[10 * cm, 6 * cm])
+    kpi_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Vera"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F8FAFC")),
+        ("FONTNAME", (0, 0), (0, -1), "Vera-Bold"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TEXTCOLOR", (1, 3), (1, 3), colors.HexColor("#166534") if net >= 0 else colors.HexColor("#991B1B")),
+        ("FONTNAME", (1, 3), (1, 3), "Vera-Bold"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(kpi_table)
+
+    # Category breakdown
+    cat = {}
+    for e in expenses:
+        cat[e["category"]] = cat.get(e["category"], 0) + e["amount"]
+    if cat:
+        story.append(Paragraph("Gider Kategorileri", h2))
+        rows = [["Kategori", "Tutar", "Oran"]]
+        for k, v in sorted(cat.items(), key=lambda x: -x[1]):
+            pct = (v / total_expense * 100) if total_expense else 0
+            rows.append([k, _fmt_try(v), f"%{pct:.1f}"])
+        tbl = Table(rows, colWidths=[8 * cm, 5 * cm, 3 * cm])
+        tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), "Vera"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Vera-Bold"),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E2E8F0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(tbl)
+
+    # Upcoming pending checks + notes
+    pending = [{"kind": "Çek", **c} for c in checks if c.get("status") == "pending"] + \
+              [{"kind": "Senet", **n} for n in notes if n.get("status") == "pending"]
+    pending.sort(key=lambda x: x["due_date"])
+    if pending:
+        story.append(Paragraph("Dönemdeki Bekleyen Çek & Senetler", h2))
+        rows = [["Tür", "Yön", "Karşı Taraf", "Vade", "Tutar"]]
+        for p in pending:
+            direction = "Alacak" if p["type"] == "received" else "Borç"
+            rows.append([p["kind"], direction, p["party"][:30], p["due_date"], _fmt_try(p["amount"])])
+        tbl = Table(rows, colWidths=[2 * cm, 2 * cm, 6.5 * cm, 2.5 * cm, 3 * cm])
+        tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), "Vera"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Vera-Bold"),
+            ("ALIGN", (4, 0), (4, -1), "RIGHT"),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E2E8F0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(tbl)
+
+    # Income table
+    if incomes:
+        story.append(Paragraph("Gelirler", h2))
+        rows = [["Kaynak", "Açıklama", "Tarih", "Tutar"]]
+        for i in incomes:
+            rows.append([i["source"][:20], (i.get("description") or "-")[:35], i["date"], _fmt_try(i["amount"])])
+        tbl = Table(rows, colWidths=[4 * cm, 7 * cm, 2.5 * cm, 3 * cm])
+        tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), "Vera"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#166534")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Vera-Bold"),
+            ("ALIGN", (3, 0), (3, -1), "RIGHT"),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E2E8F0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(tbl)
+
+    # Expense table
+    if expenses:
+        story.append(Paragraph("Giderler", h2))
+        rows = [["Kategori", "Açıklama", "Tarih", "Tutar"]]
+        for e in expenses:
+            rows.append([e["category"][:20], (e.get("description") or "-")[:35], e["date"], _fmt_try(e["amount"])])
+        tbl = Table(rows, colWidths=[4 * cm, 7 * cm, 2.5 * cm, 3 * cm])
+        tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), "Vera"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#991B1B")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Vera-Bold"),
+            ("ALIGN", (3, 0), (3, -1), "RIGHT"),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E2E8F0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(tbl)
+
+    if not (incomes or expenses or pending):
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph("Seçilen dönemde kayıt bulunmuyor.", body))
+
+    doc.build(story)
+    buf.seek(0)
+    filename = f"nakit-akis-raporu-{start_date}-{end_date}.pdf"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @api_router.get("/")

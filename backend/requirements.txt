@@ -29,3 +29,4 @@ emergentintegrations==0.2.0
 APScheduler==3.11.3
 resend==2.32.2
 tzlocal==5.4.4
+reportlab==5.0.0

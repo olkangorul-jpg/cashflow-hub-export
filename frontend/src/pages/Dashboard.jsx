@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { formatTRY, formatDate, daysUntil } from "@/lib/format";
 import { PageHeader } from "@/components/PageHeader";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { downloadCsv } from "@/components/ExportButton";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Wallet,
@@ -9,7 +12,9 @@ import {
   ArrowUpRight,
   Landmark,
   AlertCircle,
+  FileDown,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   BarChart,
   Bar,
@@ -54,6 +59,8 @@ const Kpi = ({ label, value, sub, icon: Icon, tone = "default", testid }) => {
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
+  const [range, setRange] = useState({ startDate: "", endDate: "" });
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -61,6 +68,23 @@ export default function Dashboard() {
       setData(data);
     })();
   }, []);
+
+  const downloadPdf = async () => {
+    setDownloading(true);
+    try {
+      const params = new URLSearchParams();
+      if (range.startDate) params.set("start_date", range.startDate);
+      if (range.endDate) params.set("end_date", range.endDate);
+      const qs = params.toString();
+      const filename = `nakit-akis-raporu-${range.startDate || "bu-ay"}-${range.endDate || "simdi"}.pdf`;
+      await downloadCsv(`/reports/pdf${qs ? "?" + qs : ""}`, filename);
+      toast.success("PDF raporu indirildi");
+    } catch {
+      toast.error("PDF indirilemedi");
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (!data) {
     return (
@@ -79,6 +103,24 @@ export default function Dashboard() {
         title="Nakit Akış Kontrol Paneli"
         description="Tüm hesap, çek, senet ve yaklaşan ödemelerinizin özet görünümü."
         testid="dashboard-header"
+        actions={
+          <Button
+            onClick={downloadPdf}
+            disabled={downloading}
+            data-testid="download-pdf-btn"
+            className="bg-slate-900 hover:bg-slate-800 text-white"
+          >
+            <FileDown className="h-4 w-4 mr-2" strokeWidth={1.75} />
+            {downloading ? "Hazırlanıyor..." : "PDF Rapor"}
+          </Button>
+        }
+      />
+
+      <DateRangeFilter
+        startDate={range.startDate}
+        endDate={range.endDate}
+        onChange={setRange}
+        testidPrefix="dashboard-date"
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
