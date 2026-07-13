@@ -1,0 +1,41 @@
+{
+  "summary": "First-finish smoke test for Turkish cash flow app (Nakit Akış). Backend auth, CRUD, dashboard, and CSV export verified via Bearer session. Frontend authenticated flow verified via session cookie: login page, unauth redirect, dashboard KPIs+charts, add bank account, checks page, logout redirect. Core happy path works end-to-end.",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "GET /api/auth/me -> 401 without auth; 200 with Bearer session token returns user",
+    "GET /api/dashboard/summary -> 200 with total_balance, monthly (6 months, Turkish month labels), categories, upcoming, month_income/expense",
+    "POST/GET /api/bank-accounts -> 200 (created & returned with TRY currency)",
+    "POST /api/checks -> 200 (fields: type, party, amount, due_date, status)",
+    "POST /api/expenses -> 200 (category, description, amount, date)",
+    "POST /api/incomes -> 200 (source, description, amount, date)",
+    "POST /api/promissory-notes -> 200 (type: received/issued, party, amount, due_date)",
+    "GET /api/export/{checks,promissory-notes,expenses,incomes} -> 200 with Content-Type text/csv and proper header row",
+    "Login page renders with data-testid=google-login-button",
+    "Unauthenticated / redirected to /login by ProtectedRoute",
+    "Authenticated /dashboard shows dashboard-page, kpi-total-balance (₺15.000,00), kpi-upcoming-in, kpi-upcoming-out, kpi-month-net, user-name in sidebar",
+    "Monthly chart (Son 6 Ay) and categories chart render",
+    "Bank Accounts: add-account-btn opens dialog; save-account-btn creates record and row 'UI Test Hesap' is visible",
+    "Checks page loads with add-check-btn and export-checks-btn visible",
+    "logout-button clears session and redirects to /login"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": {
+    "test_credentials_file": "/app/memory/test_credentials.md is empty (expected for OAuth-only app). Test session created via mongosh per /app/auth_testing.md.",
+    "test_session_token": "test_session_1783936353781",
+    "test_user_id": "test-user-1783936353781",
+    "backend_field_conventions": "Income uses 'source' (not 'category'); PromissoryNote type is 'received'/'issued' (not receivable/payable). Frontend forms send correct fields — verified against Incomes.jsx and PromissoryNotes.jsx.",
+    "not_tested_deferred_to_full_qa": [
+      "Checks tabs filter (Tümü/Alınan/Verilen)",
+      "Notes tabs filter (alacak/borç)",
+      "Expenses total updates and Incomes total updates",
+      "Upcoming Payments page grouping by month + net totals",
+      "PUT/DELETE endpoints for all resources",
+      "CSV download click via export-*-btn in UI",
+      "user_id isolation across two different users"
+    ]
+  }
+}
