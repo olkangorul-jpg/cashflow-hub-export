@@ -23,6 +23,7 @@
 - Recharts monthly bar + category donut
 - Sonner toasts, Shadcn UI dialogs/tables/tabs/selects
 - Testing agent iteration_1: 100% backend & frontend pass
+- **Reminders (2026-02)**: In-app notification bell with unread badge + Resend email at D-3 and D-1 for pending checks/notes. Daily APScheduler cron at 06:00 UTC (09:00 TR). Manual "Kontrol Et" trigger. Dedup by (item_id, days_before).
 
 ## Backlog
 - P1: Edit/delete UI polish testing coverage, PDF export, filter by date range

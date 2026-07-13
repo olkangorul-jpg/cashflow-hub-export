@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import NotificationBell from "@/components/NotificationBell";
 import {
   LayoutDashboard,
   Landmark,
@@ -93,9 +94,17 @@ export default function AppLayout() {
               </div>
               <span className="font-heading font-bold tracking-tight">Nakit Akış</span>
             </div>
-            <button onClick={logout} className="p-2 text-slate-500" data-testid="logout-button-mobile">
-              <LogOut className="h-4 w-4" strokeWidth={1.75} />
-            </button>
+            <div className="flex items-center gap-1">
+              <NotificationBell />
+              <button onClick={logout} className="p-2 text-slate-500" data-testid="logout-button-mobile">
+                <LogOut className="h-4 w-4" strokeWidth={1.75} />
+              </button>
+            </div>
+          </header>
+
+          {/* Desktop top bar */}
+          <header className="hidden lg:flex items-center justify-end px-8 py-4 border-b border-slate-200 bg-white gap-2">
+            <NotificationBell />
           </header>
 
           {/* Mobile bottom nav */}

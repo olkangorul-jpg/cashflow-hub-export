@@ -3,16 +3,20 @@ from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 import os
 import io
 import csv
+import asyncio
 import logging
 import uuid
 import requests
+import resend
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Literal
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -20,6 +24,10 @@ load_dotenv(ROOT_DIR / ".env")
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
+
+# Resend email setup
+resend.api_key = os.environ.get("RESEND_API_KEY", "")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -553,6 +561,193 @@ async def root():
     return {"message": "Nakit Akış API"}
 
 
+# ---------------- Notifications & Reminders ----------------
+class Notification(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    user_id: str
+    title: str
+    body: str
+    kind: str  # check / note
+    item_id: Optional[str] = None
+    due_date: Optional[str] = None
+    days_before: Optional[int] = None
+    read: bool = False
+    email_sent: bool = False
+    created_at: datetime
+
+
+def _render_email_html(user_name: str, items: List[dict]) -> str:
+    rows = ""
+    tr_type = {"received": "Alacak", "issued": "Borç"}
+    for it in items:
+        kind = "Çek" if it["kind"] == "check" else "Senet"
+        color = "#991B1B" if it["type"] == "issued" else "#166534"
+        rows += f"""
+        <tr>
+          <td style="padding:12px;border-bottom:1px solid #E2E8F0;font-family:Arial,sans-serif;font-size:14px;">
+            <strong>{it['party']}</strong><br/>
+            <span style="color:#64748B;font-size:12px;">{kind} · {tr_type.get(it['type'], it['type'])}</span>
+          </td>
+          <td style="padding:12px;border-bottom:1px solid #E2E8F0;font-family:Arial,sans-serif;font-size:13px;color:#0F172A;">
+            {it['due_date']}<br/>
+            <span style="color:#B45309;font-size:12px;">{it['days_before']} gün kaldı</span>
+          </td>
+          <td style="padding:12px;border-bottom:1px solid #E2E8F0;font-family:Arial,sans-serif;font-size:14px;text-align:right;color:{color};font-weight:600;">
+            {'-' if it['type']=='issued' else '+'}{it['amount']:,.2f} ₺
+          </td>
+        </tr>
+        """
+    return f"""
+    <!DOCTYPE html>
+    <html><body style="margin:0;background:#F8F9FA;padding:24px;font-family:Arial,sans-serif;">
+      <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #E2E8F0;border-radius:6px;">
+        <tr>
+          <td style="padding:24px;border-bottom:1px solid #E2E8F0;">
+            <h1 style="margin:0;font-size:20px;color:#0F172A;">Yaklaşan Ödemeler</h1>
+            <p style="margin:6px 0 0;color:#64748B;font-size:14px;">Merhaba {user_name}, aşağıdaki ödemelerinizin vadesi yaklaşıyor.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 24px;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:12px 0;">
+              {rows}
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 24px;background:#F8F9FA;border-top:1px solid #E2E8F0;border-radius:0 0 6px 6px;">
+            <p style="margin:0;font-size:12px;color:#64748B;">Bu bildirim Nakit Akış Yönetim uygulaması tarafından otomatik olarak gönderildi.</p>
+          </td>
+        </tr>
+      </table>
+    </body></html>
+    """
+
+
+async def _send_email(to: str, subject: str, html: str) -> bool:
+    if not resend.api_key:
+        logger.warning("RESEND_API_KEY not set - skipping email")
+        return False
+    try:
+        params = {"from": SENDER_EMAIL, "to": [to], "subject": subject, "html": html}
+        await asyncio.to_thread(resend.Emails.send, params)
+        return True
+    except Exception as e:
+        logger.error(f"Email send failed: {e}")
+        return False
+
+
+REMINDER_DAYS = [3, 1]  # days before due to remind
+
+
+async def _run_reminders_for_user(user_doc: dict):
+    uid = user_doc["user_id"]
+    today = datetime.now(timezone.utc).date()
+    checks = await db.checks.find({"user_id": uid, "status": "pending"}, {"_id": 0}).to_list(2000)
+    notes = await db.promissory_notes.find({"user_id": uid, "status": "pending"}, {"_id": 0}).to_list(2000)
+
+    triggered = []
+    for it in checks:
+        it["_kind"] = "check"
+    for it in notes:
+        it["_kind"] = "note"
+    for it in checks + notes:
+        try:
+            due = datetime.fromisoformat(it["due_date"]).date()
+        except Exception:
+            continue
+        delta = (due - today).days
+        if delta in REMINDER_DAYS:
+            # dedupe: one notification per (item, days_before)
+            key = {"user_id": uid, "item_id": it["id"], "days_before": delta, "kind": it["_kind"]}
+            existing = await db.notifications.find_one(key, {"_id": 0})
+            if existing:
+                continue
+            title = f"{'Çek' if it['_kind']=='check' else 'Senet'} vadesi {delta} gün kaldı"
+            kind_label = "Alacak" if it["type"] == "received" else "Borç"
+            body = f"{it['party']} · {kind_label} · {it['amount']:.2f} ₺ · Vade: {it['due_date']}"
+            notif = {
+                "id": str(uuid.uuid4()),
+                "user_id": uid,
+                "title": title,
+                "body": body,
+                "kind": it["_kind"],
+                "item_id": it["id"],
+                "due_date": it["due_date"],
+                "days_before": delta,
+                "read": False,
+                "email_sent": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.notifications.insert_one(notif)
+            triggered.append({**it, "kind": it["_kind"], "days_before": delta})
+
+    email_sent = False
+    if triggered and user_doc.get("email"):
+        html = _render_email_html(user_doc.get("name") or "Kullanıcı", triggered)
+        email_sent = await _send_email(
+            user_doc["email"],
+            f"Nakit Akış — {len(triggered)} yaklaşan ödeme",
+            html,
+        )
+        if email_sent:
+            item_ids = [t["id"] for t in triggered]
+            await db.notifications.update_many(
+                {"user_id": uid, "item_id": {"$in": item_ids}, "email_sent": False},
+                {"$set": {"email_sent": True}},
+            )
+    return {"created": len(triggered), "email_sent": email_sent}
+
+
+async def _run_reminders_all_users():
+    logger.info("Running daily reminder check...")
+    users = await db.users.find({}, {"_id": 0}).to_list(10000)
+    total = 0
+    for u in users:
+        try:
+            r = await _run_reminders_for_user(u)
+            total += r["created"]
+        except Exception as e:
+            logger.error(f"Reminder failed for user {u.get('user_id')}: {e}")
+    logger.info(f"Reminder check done. {total} notifications created.")
+    return total
+
+
+@api_router.get("/notifications", response_model=List[Notification])
+async def list_notifications(user: User = Depends(get_current_user)):
+    docs = await db.notifications.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for d in docs:
+        if isinstance(d.get("created_at"), str):
+            d["created_at"] = datetime.fromisoformat(d["created_at"])
+    return [Notification(**d) for d in docs]
+
+
+@api_router.get("/notifications/unread-count")
+async def unread_count(user: User = Depends(get_current_user)):
+    count = await db.notifications.count_documents({"user_id": user.user_id, "read": False})
+    return {"count": count}
+
+
+@api_router.post("/notifications/{notif_id}/read")
+async def mark_read(notif_id: str, user: User = Depends(get_current_user)):
+    await db.notifications.update_one({"id": notif_id, "user_id": user.user_id}, {"$set": {"read": True}})
+    return {"ok": True}
+
+
+@api_router.post("/notifications/mark-all-read")
+async def mark_all_read(user: User = Depends(get_current_user)):
+    await db.notifications.update_many({"user_id": user.user_id, "read": False}, {"$set": {"read": True}})
+    return {"ok": True}
+
+
+@api_router.post("/notifications/check-reminders")
+async def check_reminders_now(user: User = Depends(get_current_user)):
+    user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    r = await _run_reminders_for_user(user_doc)
+    return r
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -566,7 +761,21 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# APScheduler: daily reminder check at 06:00 UTC (09:00 Turkey time)
+scheduler = AsyncIOScheduler(timezone="UTC")
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    scheduler.add_job(_run_reminders_all_users, CronTrigger(hour=6, minute=0), id="daily_reminders", replace_existing=True)
+    scheduler.start()
+    logger.info("Reminder scheduler started (daily at 06:00 UTC / 09:00 TR).")
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     client.close()
