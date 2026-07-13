@@ -577,6 +577,43 @@ class Notification(BaseModel):
     created_at: datetime
 
 
+class Preferences(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    email_enabled: bool = True
+    in_app_enabled: bool = True
+    reminder_days: List[int] = Field(default_factory=lambda: [3, 1])
+    notification_email: Optional[str] = None
+
+
+DEFAULT_PREFS = {"email_enabled": True, "in_app_enabled": True, "reminder_days": [3, 1], "notification_email": None}
+
+
+async def _get_prefs(user_id: str) -> dict:
+    doc = await db.user_preferences.find_one({"user_id": user_id}, {"_id": 0})
+    if not doc:
+        return DEFAULT_PREFS.copy()
+    return {**DEFAULT_PREFS, **{k: v for k, v in doc.items() if k in DEFAULT_PREFS}}
+
+
+@api_router.get("/preferences", response_model=Preferences)
+async def get_preferences(user: User = Depends(get_current_user)):
+    prefs = await _get_prefs(user.user_id)
+    return Preferences(**prefs)
+
+
+@api_router.put("/preferences", response_model=Preferences)
+async def update_preferences(payload: Preferences, user: User = Depends(get_current_user)):
+    days = sorted({int(d) for d in payload.reminder_days if 0 < int(d) <= 60}) or [3, 1]
+    doc = {
+        "email_enabled": bool(payload.email_enabled),
+        "in_app_enabled": bool(payload.in_app_enabled),
+        "reminder_days": days,
+        "notification_email": (payload.notification_email or "").strip() or None,
+    }
+    await db.user_preferences.update_one({"user_id": user.user_id}, {"$set": {"user_id": user.user_id, **doc}}, upsert=True)
+    return Preferences(**doc)
+
+
 def _render_email_html(user_name: str, items: List[dict]) -> str:
     rows = ""
     tr_type = {"received": "Alacak", "issued": "Borç"}
@@ -638,11 +675,16 @@ async def _send_email(to: str, subject: str, html: str) -> bool:
         return False
 
 
-REMINDER_DAYS = [3, 1]  # days before due to remind
+REMINDER_DAYS = [3, 1]  # default fallback when user has no preferences
 
 
 async def _run_reminders_for_user(user_doc: dict):
     uid = user_doc["user_id"]
+    prefs = await _get_prefs(uid)
+    if not prefs["in_app_enabled"] and not prefs["email_enabled"]:
+        return {"created": 0, "email_sent": False}
+    reminder_days = prefs.get("reminder_days") or REMINDER_DAYS
+
     today = datetime.now(timezone.utc).date()
     checks = await db.checks.find({"user_id": uid, "status": "pending"}, {"_id": 0}).to_list(2000)
     notes = await db.promissory_notes.find({"user_id": uid, "status": "pending"}, {"_id": 0}).to_list(2000)
@@ -658,36 +700,38 @@ async def _run_reminders_for_user(user_doc: dict):
         except Exception:
             continue
         delta = (due - today).days
-        if delta in REMINDER_DAYS:
+        if delta in reminder_days:
             # dedupe: one notification per (item, days_before)
             key = {"user_id": uid, "item_id": it["id"], "days_before": delta, "kind": it["_kind"]}
             existing = await db.notifications.find_one(key, {"_id": 0})
             if existing:
                 continue
-            title = f"{'Çek' if it['_kind']=='check' else 'Senet'} vadesi {delta} gün kaldı"
-            kind_label = "Alacak" if it["type"] == "received" else "Borç"
-            body = f"{it['party']} · {kind_label} · {it['amount']:.2f} ₺ · Vade: {it['due_date']}"
-            notif = {
-                "id": str(uuid.uuid4()),
-                "user_id": uid,
-                "title": title,
-                "body": body,
-                "kind": it["_kind"],
-                "item_id": it["id"],
-                "due_date": it["due_date"],
-                "days_before": delta,
-                "read": False,
-                "email_sent": False,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            await db.notifications.insert_one(notif)
+            if prefs["in_app_enabled"]:
+                title = f"{'Çek' if it['_kind']=='check' else 'Senet'} vadesi {delta} gün kaldı"
+                kind_label = "Alacak" if it["type"] == "received" else "Borç"
+                body = f"{it['party']} · {kind_label} · {it['amount']:.2f} ₺ · Vade: {it['due_date']}"
+                notif = {
+                    "id": str(uuid.uuid4()),
+                    "user_id": uid,
+                    "title": title,
+                    "body": body,
+                    "kind": it["_kind"],
+                    "item_id": it["id"],
+                    "due_date": it["due_date"],
+                    "days_before": delta,
+                    "read": False,
+                    "email_sent": False,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.notifications.insert_one(notif)
             triggered.append({**it, "kind": it["_kind"], "days_before": delta})
 
     email_sent = False
-    if triggered and user_doc.get("email"):
+    target_email = prefs.get("notification_email") or user_doc.get("email")
+    if triggered and prefs["email_enabled"] and target_email:
         html = _render_email_html(user_doc.get("name") or "Kullanıcı", triggered)
         email_sent = await _send_email(
-            user_doc["email"],
+            target_email,
             f"Nakit Akış — {len(triggered)} yaklaşan ödeme",
             html,
         )

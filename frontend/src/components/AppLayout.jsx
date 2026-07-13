@@ -10,6 +10,7 @@ import {
   TrendingUp,
   CalendarClock,
   LogOut,
+  Settings as SettingsIcon,
 } from "lucide-react";
 
 const NAV = [
@@ -20,6 +21,7 @@ const NAV = [
   { to: "/notes", label: "Senetler", icon: ScrollText, testid: "nav-notes" },
   { to: "/expenses", label: "Giderler", icon: Receipt, testid: "nav-expenses" },
   { to: "/incomes", label: "Gelirler", icon: TrendingUp, testid: "nav-incomes" },
+  { to: "/settings", label: "Ayarlar", icon: SettingsIcon, testid: "nav-settings" },
 ];
 
 export default function AppLayout() {

@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 2: Notification Preferences feature fully verified. Backend: 10/10 pytest cases pass (auth guard, GET defaults, PUT persistence, invalid-day filtering, empty-list fallback, blank-email→null, reminder respects in_app_enabled/email_enabled/reminder_days/notification_email). Frontend: /settings loads, all data-testids present, email-toggle conditionally hides notification-email-input, day-chip toggle works, save-preferences-btn triggers PUT /api/preferences 200 with correct payload, success toast 'Tercihler kaydedildi' displayed, nav-settings visible in sidebar and navigates properly.",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "passed": [
+    "GET /api/preferences returns 401 without auth",
+    "GET /api/preferences returns defaults {email_enabled:true, in_app_enabled:true, reminder_days:[3,1], notification_email:null}",
+    "PUT /api/preferences saves & GET returns persisted values",
+    "PUT filters invalid reminder_days (0, -1, 100 dropped; 3,5 kept)",
+    "PUT with empty reminder_days falls back to [3,1]",
+    "PUT with whitespace-only notification_email stored as null",
+    "check-reminders with in_app_enabled=false & email_enabled=false creates 0 notifications (early return)",
+    "check-reminders with in_app_enabled=true creates in-app notification with email_sent=false when email disabled",
+    "check-reminders uses custom reminder_days (7 triggers, 3 skipped when prefs=[7])",
+    "check-reminders stores prefs.notification_email override correctly in user_preferences",
+    "/settings route renders settings-page and all channel/email/day/save testids present",
+    "Toggling email-toggle OFF hides notification-email-input, ON reveals it",
+    "save-preferences-btn triggers PUT returning updated prefs (200) and shows success toast",
+    "nav-settings appears in sidebar with correct label 'Ayarlar' and navigates to /settings"
+  ],
+  "test_report_links": ["/app/backend/tests/test_preferences.py", "/app/test_reports/pytest/prefs_results.xml"],
+  "updated_files": ["/app/backend/tests/test_preferences.py"],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100%"},
+  "test_credentials": "Test user created via mongosh (see /app/auth_testing.md). Session token: test_session_prefs_1783951471825 (for /app/memory/test_credentials.md reference).",
+  "seed_data_creation": "Created ephemeral test user + session + pending checks via API inside test fixtures (auto-cleaned in teardown). One long-lived UI session user retained for browser testing.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "critical_code_review_comments": [
+    "server.py is 826 lines — approaching the 700-line threshold. Consider splitting notifications/preferences into a separate router module for maintainability.",
+    "Email delivery (Resend) not verified end-to-end since RESEND_API_KEY may be absent; _send_email gracefully returns False. If prod email delivery matters, add an integration test with a valid key or mock."
+  ],
+  "context_for_next_testing_agent": "Preferences feature is stable. Test file at /app/backend/tests/test_preferences.py reusable as regression. iteration_1 tests still valid. If adding new prefs fields, extend _get_prefs DEFAULT_PREFS merge logic — currently strict to whitelist keys."
+}
