@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1087,7 +1087,193 @@ async def root():
     return {"message": "Nakit Akış API"}
 
 
-# ---------------- Notifications & Reminders ----------------
+# ---------------- Excel/CSV Import ----------------
+IMPORT_SCHEMAS = {
+    "expenses": {
+        "collection": "expenses",
+        "columns": ["category", "description", "amount", "date"],
+        "required": ["category", "description", "amount", "date"],
+        "amount_fields": ["amount"],
+        "date_fields": ["date"],
+        "sample_row": ["Kira", "Ofis kirası Şubat", "12500.00", "2026-02-01"],
+    },
+    "incomes": {
+        "collection": "incomes",
+        "columns": ["source", "description", "amount", "date"],
+        "required": ["source", "amount", "date"],
+        "amount_fields": ["amount"],
+        "date_fields": ["date"],
+        "sample_row": ["Satış", "Ürün satışı", "45000.00", "2026-02-05"],
+    },
+    "checks": {
+        "collection": "checks",
+        "columns": ["type", "party", "amount", "due_date", "bank_name", "check_number", "status", "notes"],
+        "required": ["type", "party", "amount", "due_date"],
+        "amount_fields": ["amount"],
+        "date_fields": ["due_date"],
+        "sample_row": ["issued", "ABC Ltd", "15000.00", "2026-03-15", "Garanti BBVA", "1234567", "pending", ""],
+        "enum": {"type": ["received", "issued"], "status": ["pending", "cleared", "bounced"]},
+    },
+    "promissory-notes": {
+        "collection": "promissory_notes",
+        "columns": ["type", "party", "amount", "due_date", "status", "notes"],
+        "required": ["type", "party", "amount", "due_date"],
+        "amount_fields": ["amount"],
+        "date_fields": ["due_date"],
+        "sample_row": ["received", "XYZ A.Ş.", "8500.00", "2026-03-20", "pending", ""],
+        "enum": {"type": ["received", "issued"], "status": ["pending", "paid", "overdue"]},
+    },
+}
+
+
+def _parse_iso_date(v) -> Optional[str]:
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if hasattr(v, "isoformat"):
+        try:
+            return v.isoformat()[:10]
+        except Exception:
+            pass
+    s = str(v).strip()
+    # Accept dd/mm/yyyy, dd.mm.yyyy, dd-mm-yyyy, yyyy-mm-dd
+    for sep in ["/", ".", "-"]:
+        if sep in s and len(s.split(sep)) == 3:
+            parts = s.split(sep)
+            try:
+                if len(parts[0]) == 4:  # yyyy-mm-dd
+                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                else:
+                    d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                return date(y, m, d).isoformat()
+            except Exception:
+                continue
+    return None
+
+
+def _read_rows(file_bytes: bytes, filename: str):
+    name = (filename or "").lower()
+    if name.endswith(".xlsx") or name.endswith(".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(filename=io.BytesIO(file_bytes), data_only=True, read_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return [], []
+        headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+        data = []
+        for r in rows[1:]:
+            if all(c is None or str(c).strip() == "" for c in r):
+                continue
+            data.append({headers[i]: r[i] for i in range(min(len(headers), len(r)))})
+        return headers, data
+    else:
+        # CSV
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        # Auto-detect delimiter
+        delim = ";" if text.count(";") > text.count(",") else ","
+        reader = csv.DictReader(io.StringIO(text), delimiter=delim)
+        headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+        data = [{k.strip().lower(): v for k, v in row.items()} for row in reader if any((v or "").strip() for v in row.values())]
+        return headers, data
+
+
+@api_router.get("/import/{resource}/template")
+async def import_template(resource: str, user: User = Depends(get_current_user)):
+    schema = IMPORT_SCHEMAS.get(resource)
+    if not schema:
+        raise HTTPException(status_code=404, detail="Bilinmeyen kaynak")
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = resource
+    ws.append(schema["columns"])
+    ws.append(schema["sample_row"])
+    # Header style
+    from openpyxl.styles import Font, PatternFill
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="0F172A")
+    for i, col in enumerate(schema["columns"], 1):
+        ws.column_dimensions[chr(64 + i)].width = max(14, len(col) + 4)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"nakit-akis-sablon-{resource}.xlsx"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.post("/import/{resource}")
+async def import_file(resource: str, file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    schema = IMPORT_SCHEMAS.get(resource)
+    if not schema:
+        raise HTTPException(status_code=404, detail="Bilinmeyen kaynak")
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Dosya 5MB'dan büyük olamaz")
+
+    try:
+        headers, rows = _read_rows(content, file.filename or "")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Dosya okunamadı: {e}")
+
+    missing_headers = [c for c in schema["required"] if c not in headers]
+    if missing_headers:
+        raise HTTPException(status_code=400, detail=f"Eksik kolonlar: {', '.join(missing_headers)}")
+
+    inserted = 0
+    errors = []
+    docs = []
+    for idx, row in enumerate(rows, start=2):  # start=2 because row 1 is header
+        try:
+            record = {"id": str(uuid.uuid4()), "user_id": user.data_owner_id,
+                      "created_at": datetime.now(timezone.utc).isoformat()}
+            for col in schema["columns"]:
+                v = row.get(col)
+                if v is None or (isinstance(v, str) and v.strip() == ""):
+                    if col in schema["required"]:
+                        raise ValueError(f"'{col}' zorunlu")
+                    record[col] = "" if col not in schema["amount_fields"] else 0.0
+                    continue
+                if col in schema["amount_fields"]:
+                    try:
+                        record[col] = float(str(v).replace(",", ".").replace(" ", ""))
+                    except Exception:
+                        raise ValueError(f"'{col}' geçersiz tutar: {v}")
+                elif col in schema["date_fields"]:
+                    d = _parse_iso_date(v)
+                    if not d:
+                        raise ValueError(f"'{col}' geçersiz tarih: {v}")
+                    record[col] = d
+                else:
+                    record[col] = str(v).strip()
+                    # Enum validation
+                    if "enum" in schema and col in schema["enum"]:
+                        if record[col].lower() not in schema["enum"][col]:
+                            raise ValueError(f"'{col}' geçersiz değer: {v} (izin verilen: {', '.join(schema['enum'][col])})")
+                        record[col] = record[col].lower()
+            # Default status if not provided
+            if resource == "checks" and not record.get("status"):
+                record["status"] = "pending"
+            if resource == "promissory-notes" and not record.get("status"):
+                record["status"] = "pending"
+            docs.append(record)
+        except Exception as e:
+            errors.append({"row": idx, "message": str(e)})
+
+    if docs:
+        await db[schema["collection"]].insert_many(docs)
+        inserted = len(docs)
+
+    return {"inserted": inserted, "errors": errors, "total_rows": len(rows)}
+
+
+
 class Notification(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str

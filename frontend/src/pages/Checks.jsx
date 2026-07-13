@@ -4,6 +4,7 @@ import { formatTRY, formatDate, daysUntil } from "@/lib/format";
 import { PageHeader } from "@/components/PageHeader";
 import { ExportButton } from "@/components/ExportButton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import ImportDialog from "@/components/ImportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,6 +66,7 @@ export default function Checks() {
         description="Alınan ve verilen çekleri vade tarihlerine göre takip edin."
         actions={
           <>
+            <ImportDialog resource="checks" label="Çek İçe Aktar" onImported={load} testidPrefix="checks-import" />
             <ExportButton path="/export/checks" filename="cekler.csv" testid="export-checks-btn" />
             <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditing(null); setForm(empty); } }}>
               <DialogTrigger asChild>

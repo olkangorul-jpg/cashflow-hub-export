@@ -4,6 +4,7 @@ import { formatTRY, formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/PageHeader";
 import { ExportButton } from "@/components/ExportButton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import ImportDialog from "@/components/ImportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,6 +52,7 @@ export default function Incomes() {
         description="Satış, tahsilat ve diğer gelir kayıtlarınız."
         actions={
           <>
+            <ImportDialog resource="incomes" label="Gelir İçe Aktar" onImported={load} testidPrefix="incomes-import" />
             <ExportButton path="/export/incomes" filename="gelirler.csv" testid="export-incomes-btn" />
             <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditing(null); setForm(empty); } }}>
               <DialogTrigger asChild>

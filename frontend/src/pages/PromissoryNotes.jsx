@@ -4,6 +4,7 @@ import { formatTRY, formatDate, daysUntil } from "@/lib/format";
 import { PageHeader } from "@/components/PageHeader";
 import { ExportButton } from "@/components/ExportButton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import ImportDialog from "@/components/ImportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -61,6 +62,7 @@ export default function PromissoryNotes() {
         description="Alınan ve verilen senetleri (aşacaklar/borçlar) vadeleriyle takip edin."
         actions={
           <>
+            <ImportDialog resource="promissory-notes" label="Senet İçe Aktar" onImported={load} testidPrefix="notes-import" />
             <ExportButton path="/export/promissory-notes" filename="senetler.csv" testid="export-notes-btn" />
             <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditing(null); setForm(empty); } }}>
               <DialogTrigger asChild>
