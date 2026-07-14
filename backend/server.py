@@ -215,6 +215,16 @@ async def _accept_pending_invites(user_id: str, email: str, name: str):
             {"id": m["id"]},
             {"$set": {"user_id": user_id, "name": name, "status": "active", "accepted_at": datetime.now(timezone.utc).isoformat()}},
         )
+    # If the user has no active_workspace_id yet and joined a shared workspace via invite,
+    # set the first invited workspace as their default active — so they land in the shared
+    # workspace on first login (not their empty personal one).
+    if pending:
+        user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
+        if not user_doc.get("active_workspace_id"):
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"active_workspace_id": pending[0]["workspace_id"]}},
+            )
 
 
 async def _resolve_workspace_context(user_doc: dict):

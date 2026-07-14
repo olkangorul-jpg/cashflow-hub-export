@@ -1,0 +1,21 @@
+{
+  "summary": "Backend testing of invited-user active_workspace_id fix. Created 6 tests covering _accept_pending_invites behavior + /api/auth/me + /api/workspaces + /api/workspaces/switch + hotfix data verification for artemarble34@gmail.com. All 6 tests pass.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_invited_active_workspace.py",
+    "/app/test_reports/pytest/invite_active_ws.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_accept_pending_invites uses pending[0]['workspace_id'] deterministically — if a user has multiple pending invites, the 'first' is Mongo insertion order which is fine but could be surprising; consider ordering by invited_at desc or asc explicitly.",
+    "server.py is 2195 lines — recommend splitting into modules (auth, workspaces, transactions, reports)."
+  ],
+  "updated_files": ["/app/backend/tests/test_invited_active_workspace.py"],
+  "success_rate": {"backend": "100%", "frontend": "not_tested"},
+  "seed_data_creation": "Tests create ephemeral TEST_ prefixed users, workspaces, invites and sessions and clean them up in teardown. Existing artemarble34@gmail.com data was NOT modified — only read to verify hotfix.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file /app/backend/tests/test_invited_active_workspace.py verifies (1) _accept_pending_invites sets active_workspace_id for first-time invitees, (2) users without invites keep personal (None) unchanged, (3) existing active_workspace_id is not overwritten, (4) /api/auth/me returns shared workspace_id + correct role, (5) /api/workspaces/switch works between personal & shared, (6) hotfix data for user_77ef5bc81196 is intact. Note pytest.ini uses xdist by default — run with `-o addopts=''` to disable. Tests import server.py directly (no need to start uvicorn separately, backend URL used only for HTTP endpoint tests).",
+  "rca of the issue": "Root cause: _accept_pending_invites did not set active_workspace_id on newly-invited users. _resolve_workspace_context falls back to personal workspace when active_workspace_id is None, so invitees landed on their empty personal workspace as 'owner'. Fix (verified): after accepting pending invites, if user has no active_workspace_id, set it to pending[0]['workspace_id']. Existing behavior preserved: users with an existing active_workspace_id (e.g. previously logged in as own owner) are not overwritten; users without invites keep their None (which still resolves to personal via fallback)."
+}
