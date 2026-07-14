@@ -737,6 +737,7 @@ async def list_incomes(
 
 @api_router.post("/incomes", response_model=Income)
 async def create_income(payload: IncomeCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     obj = Income(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
