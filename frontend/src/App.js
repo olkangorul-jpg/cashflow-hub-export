@@ -16,6 +16,7 @@ import UpcomingPayments from "@/pages/UpcomingPayments";
 import Settings from "@/pages/Settings";
 import Team from "@/pages/Team";
 import TaxReport from "@/pages/TaxReport";
+import Backups from "@/pages/Backups";
 
 function AppRouter() {
   const location = useLocation();
@@ -37,6 +38,7 @@ function AppRouter() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/team" element={<Team />} />
         <Route path="/tax-report" element={<TaxReport />} />
+        <Route path="/backups" element={<Backups />} />
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

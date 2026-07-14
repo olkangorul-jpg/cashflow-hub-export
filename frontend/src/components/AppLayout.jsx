@@ -14,6 +14,7 @@ import {
   Settings as SettingsIcon,
   Users,
   Scale,
+  Database,
 } from "lucide-react";
 
 const NAV = [
@@ -26,6 +27,7 @@ const NAV = [
   { to: "/incomes", label: "Gelirler", icon: TrendingUp, testid: "nav-incomes" },
   { to: "/tax-report", label: "KDV Raporu", icon: Scale, testid: "nav-tax-report" },
   { to: "/team", label: "Ekip", icon: Users, testid: "nav-team" },
+  { to: "/backups", label: "Yedekler", icon: Database, testid: "nav-backups" },
   { to: "/settings", label: "Ayarlar", icon: SettingsIcon, testid: "nav-settings" },
 ];
 

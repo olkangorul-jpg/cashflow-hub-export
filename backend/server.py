@@ -1381,6 +1381,181 @@ async def tax_report_xlsx(
     )
 
 
+# ---------------- Backups ----------------
+BACKUP_COLLECTIONS = ["bank_accounts", "checks", "promissory_notes", "expenses", "incomes"]
+
+
+async def _create_backup(user_id: str, workspace_id: str, kind: str = "manual") -> dict:
+    payload = {}
+    for c in BACKUP_COLLECTIONS:
+        docs = await db[c].find({"user_id": user_id}, {"_id": 0}).to_list(20000)
+        payload[c] = docs
+    total_records = sum(len(v) for v in payload.values())
+    backup_id = f"bak_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "id": backup_id,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "kind": kind,  # manual / auto
+        "collections": list(BACKUP_COLLECTIONS),
+        "total_records": total_records,
+        "payload": payload,
+        "size_bytes": len(str(payload)),  # approximate
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.backups.insert_one(doc)
+
+    # Retention: keep last 10 per workspace
+    old = await db.backups.find({"workspace_id": workspace_id}, {"_id": 0, "id": 1, "created_at": 1}).sort("created_at", -1).to_list(200)
+    if len(old) > 10:
+        to_delete = [o["id"] for o in old[10:]]
+        await db.backups.delete_many({"id": {"$in": to_delete}})
+    return {
+        "id": doc["id"],
+        "workspace_id": doc["workspace_id"],
+        "kind": doc["kind"],
+        "collections": doc["collections"],
+        "total_records": doc["total_records"],
+        "size_bytes": doc["size_bytes"],
+        "created_at": doc["created_at"],
+    }
+
+
+@api_router.post("/backups")
+async def create_backup(user: User = Depends(get_current_user)):
+    b = await _create_backup(user.data_owner_id, user.workspace_id, "manual")
+    return b
+
+
+@api_router.get("/backups")
+async def list_backups(user: User = Depends(get_current_user)):
+    docs = await db.backups.find({"workspace_id": user.workspace_id}, {"_id": 0, "payload": 0}).sort("created_at", -1).to_list(50)
+    return docs
+
+
+@api_router.get("/backups/{backup_id}/download")
+async def download_backup(backup_id: str, user: User = Depends(get_current_user)):
+    doc = await db.backups.find_one({"id": backup_id, "workspace_id": user.workspace_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Yedek bulunamadı")
+    import json as _json
+    body = _json.dumps({
+        "version": 1,
+        "workspace_id": user.workspace_id,
+        "workspace_name": user.workspace_name,
+        "created_at": doc["created_at"],
+        "kind": doc["kind"],
+        "collections": doc["collections"],
+        "total_records": doc["total_records"],
+        "payload": doc["payload"],
+    }, ensure_ascii=False, indent=2)
+    filename = f"nakit-akis-yedek-{doc['created_at'][:10]}-{backup_id}.json"
+    return StreamingResponse(
+        iter([body.encode("utf-8")]),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.delete("/backups/{backup_id}")
+async def delete_backup(backup_id: str, user: User = Depends(get_current_user)):
+    res = await db.backups.delete_one({"id": backup_id, "workspace_id": user.workspace_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Yedek bulunamadı")
+    return {"ok": True}
+
+
+@api_router.post("/backups/{backup_id}/restore")
+async def restore_backup(
+    backup_id: str,
+    mode: str = "merge",  # merge | replace
+    user: User = Depends(get_current_user),
+):
+    if user.role == "viewer":
+        raise HTTPException(status_code=403, detail="Bu workspace'de salt okur yetkiniz var")
+    doc = await db.backups.find_one({"id": backup_id, "workspace_id": user.workspace_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Yedek bulunamadı")
+
+    uid = user.data_owner_id
+    restored = 0
+    if mode == "replace":
+        for c in doc["collections"]:
+            await db[c].delete_many({"user_id": uid})
+
+    for c in doc["collections"]:
+        records = doc["payload"].get(c, [])
+        if not records:
+            continue
+        new_records = []
+        for r in records:
+            r = {**r}
+            r["user_id"] = uid  # ensure ownership matches current workspace
+            if mode == "merge":
+                r["id"] = str(uuid.uuid4())  # avoid collision
+            new_records.append(r)
+        if new_records:
+            await db[c].insert_many(new_records)
+            restored += len(new_records)
+    return {"ok": True, "restored": restored, "mode": mode}
+
+
+@api_router.post("/backups/restore-file")
+async def restore_from_file(
+    file: UploadFile = File(...),
+    mode: str = "merge",
+    user: User = Depends(get_current_user),
+):
+    if user.role == "viewer":
+        raise HTTPException(status_code=403, detail="Bu workspace'de salt okur yetkiniz var")
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Dosya 20MB'dan büyük olamaz")
+    import json as _json
+    try:
+        data = _json.loads(content.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Geçersiz JSON: {e}")
+    if data.get("version") != 1 or "payload" not in data:
+        raise HTTPException(status_code=400, detail="Tanınmayan yedek formatı")
+
+    uid = user.data_owner_id
+    restored = 0
+    collections = data.get("collections") or BACKUP_COLLECTIONS
+    if mode == "replace":
+        for c in collections:
+            if c in BACKUP_COLLECTIONS:
+                await db[c].delete_many({"user_id": uid})
+    for c in collections:
+        if c not in BACKUP_COLLECTIONS:
+            continue
+        records = data["payload"].get(c, [])
+        if not records:
+            continue
+        new_records = []
+        for r in records:
+            r = {**r}
+            r["user_id"] = uid
+            if mode == "merge" or "id" not in r:
+                r["id"] = str(uuid.uuid4())
+            new_records.append(r)
+        if new_records:
+            await db[c].insert_many(new_records)
+            restored += len(new_records)
+    return {"ok": True, "restored": restored, "mode": mode}
+
+
+async def _run_weekly_backups():
+    logger.info("Running weekly auto-backup for all workspaces...")
+    workspaces = await db.workspaces.find({}, {"_id": 0}).to_list(10000)
+    for ws in workspaces:
+        try:
+            await _create_backup(ws["owner_user_id"], ws["workspace_id"], "auto")
+        except Exception as e:
+            logger.error(f"Backup failed for workspace {ws.get('workspace_id')}: {e}")
+    logger.info(f"Weekly backup done for {len(workspaces)} workspaces.")
+
+
 # ---------------- Excel/CSV Import ----------------
 IMPORT_SCHEMAS = {
     "expenses": {
@@ -1824,8 +1999,9 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 @app.on_event("startup")
 async def start_scheduler():
     scheduler.add_job(_run_reminders_all_users, CronTrigger(hour=6, minute=0), id="daily_reminders", replace_existing=True)
+    scheduler.add_job(_run_weekly_backups, CronTrigger(day_of_week="sun", hour=3, minute=0), id="weekly_backups", replace_existing=True)
     scheduler.start()
-    logger.info("Reminder scheduler started (daily at 06:00 UTC / 09:00 TR).")
+    logger.info("Reminder scheduler started (daily at 06:00 UTC / 09:00 TR). Weekly backups: Sun 03:00 UTC.")
 
 
 @app.on_event("shutdown")

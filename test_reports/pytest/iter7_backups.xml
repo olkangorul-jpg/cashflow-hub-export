@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="5" skipped="0" tests="13" time="2.138" timestamp="2026-07-14T05:53:30.215361+00:00" hostname="agent-env-aa2232ff-5990-45a5-bc63-70404515f76d"><testcase classname="tests.test_backups.TestBackupCRUD" name="test_create_backup" time="0.349"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:[{&quot;type&quot;:&quot;missing&quot;,&quot;loc&quot;:[&quot;body&quot;,&quot;name&quot;],&quot;msg&quot;:&quot;Field required&quot;,&quot;input&quot;:{&quot;bank_name&quot;:&quot;TEST_BAK_bank&quot;,&quot;account_name&quot;:&quot;Ana&quot;,&quot;currency&quot;:&quot;TRY&quot;,&quot;balance&quot;:1000},&quot;url&quot;:&quot;https://errors.pydantic.dev/2.13/v/missing&quot;}]}&#10;assert 422 in (200, 201)&#10; +  where 422 = &lt;Response [422]&gt;.status_code&quot;">backend/tests/test_backups.py:28: in seed
+    assert r.status_code in (200, 201), r.text
+E   AssertionError: {"detail":[{"type":"missing","loc":["body","name"],"msg":"Field required","input":{"bank_name":"TEST_BAK_bank","account_name":"Ana","currency":"TRY","balance":1000},"url":"https://errors.pydantic.dev/2.13/v/missing"}]}
+E   assert 422 in (200, 201)
+E    +  where 422 = &lt;Response [422]&gt;.status_code</error></testcase><testcase classname="tests.test_backups.TestBackupCRUD" name="test_list_backups_metadata_only" time="0.059"><failure message="assert (True and 0 &gt;= 1)&#10; +  where True = isinstance([], list)&#10; +  and   0 = len([])">backend/tests/test_backups.py:96: in test_list_backups_metadata_only
+    assert isinstance(items, list) and len(items) &gt;= 1
+E   assert (True and 0 &gt;= 1)
+E    +  where True = isinstance([], list)
+E    +  and   0 = len([])</failure></testcase><testcase classname="tests.test_backups.TestBackupCRUD" name="test_download_backup" time="0.000"><failure message="AttributeError: module 'pytest' has no attribute 'backup_id'">backend/tests/test_backups.py:105: in test_download_backup
+    bid = pytest.backup_id
+          ^^^^^^^^^^^^^^^^
+E   AttributeError: module 'pytest' has no attribute 'backup_id'</failure></testcase><testcase classname="tests.test_backups.TestBackupCRUD" name="test_restore_merge_doubles_records" time="0.000"><failure message="AttributeError: module 'pytest' has no attribute 'backup_id'">backend/tests/test_backups.py:117: in test_restore_merge_doubles_records
+    bid = pytest.backup_id
+          ^^^^^^^^^^^^^^^^
+E   AttributeError: module 'pytest' has no attribute 'backup_id'</failure></testcase><testcase classname="tests.test_backups.TestBackupCRUD" name="test_restore_replace_resets" time="0.000"><failure message="AttributeError: module 'pytest' has no attribute 'backup_id'">backend/tests/test_backups.py:130: in test_restore_replace_resets
+    bid = pytest.backup_id
+          ^^^^^^^^^^^^^^^^
+E   AttributeError: module 'pytest' has no attribute 'backup_id'</failure></testcase><testcase classname="tests.test_backups.TestBackupCRUD" name="test_delete_backup" time="0.213" /><testcase classname="tests.test_backups.TestBackupCRUD" name="test_download_missing_404" time="0.058" /><testcase classname="tests.test_backups.TestRestoreFile" name="test_restore_from_file_merge" time="0.117" /><testcase classname="tests.test_backups.TestRestoreFile" name="test_restore_from_file_invalid_json_400" time="0.056" /><testcase classname="tests.test_backups.TestRestoreFile" name="test_restore_from_file_wrong_version_400" time="0.055" /><testcase classname="tests.test_backups.TestWorkspaceIsolation" name="test_other_workspace_backup_isolated" time="0.228"><failure message="AttributeError: module 'pytest' has no attribute 'backup_id'">backend/tests/test_backups.py:213: in test_other_workspace_backup_isolated
+    r = s2.get(f"{BASE_URL}/api/backups/{pytest.backup_id}/download")
+                                         ^^^^^^^^^^^^^^^^
+E   AttributeError: module 'pytest' has no attribute 'backup_id'</failure></testcase><testcase classname="tests.test_backups.TestRetention" name="test_only_10_kept" time="0.845" /><testcase classname="tests.test_backups.TestSchedulerRegistered" name="test_scheduler_log_line" time="0.040" /></testsuite></testsuites>
