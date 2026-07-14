@@ -9,12 +9,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
 import { Plus, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
-const empty = { source: "", description: "", amount: 0, date: new Date().toISOString().slice(0, 10) };
+const empty = { source: "", description: "", amount: 0, vat_rate: 20, date: new Date().toISOString().slice(0, 10) };
+const VAT_RATES = [0, 1, 10, 20];
 
 export default function Incomes() {
   const [items, setItems] = useState([]);
@@ -65,8 +67,17 @@ export default function Incomes() {
                 <div className="grid gap-3 py-2">
                   <div><Label>Kaynak</Label><Input data-testid="income-source-input" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="Örn: Satış, Tahsilat" /></div>
                   <div><Label>Açıklama</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div><Label>Tutar (₺)</Label><Input data-testid="income-amount-input" type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
+                    <div>
+                      <Label>KDV %</Label>
+                      <Select value={String(form.vat_rate)} onValueChange={(v) => setForm({ ...form, vat_rate: Number(v) })}>
+                        <SelectTrigger data-testid="income-vat-select"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {VAT_RATES.map((r) => <SelectItem key={r} value={String(r)}>{r === 0 ? "KDV'siz" : `%${r}`}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div><Label>Tarih</Label><Input data-testid="income-date-input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
                   </div>
                 </div>

@@ -142,6 +142,7 @@ class Expense(BaseModel):
     category: str
     description: str
     amount: float
+    vat_rate: float = 20.0
     date: str
     bank_account_id: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -151,6 +152,7 @@ class ExpenseCreate(BaseModel):
     category: str
     description: str
     amount: float
+    vat_rate: float = 20.0
     date: str
     bank_account_id: Optional[str] = None
 
@@ -162,6 +164,7 @@ class Income(BaseModel):
     source: str
     description: str
     amount: float
+    vat_rate: float = 20.0
     date: str
     bank_account_id: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -171,6 +174,7 @@ class IncomeCreate(BaseModel):
     source: str
     description: str
     amount: float
+    vat_rate: float = 20.0
     date: str
     bank_account_id: Optional[str] = None
 
@@ -1087,23 +1091,313 @@ async def root():
     return {"message": "Nakit Akış API"}
 
 
+# ---------------- Tax / KDV Report ----------------
+def _compute_vat_breakdown(items: List[dict]) -> dict:
+    """Split items by vat_rate. Amounts are gross (KDV dahil)."""
+    by_rate = {}
+    for it in items:
+        rate = float(it.get("vat_rate") or 0)
+        gross = float(it.get("amount") or 0)
+        vat = gross * rate / (100 + rate) if rate > 0 else 0.0
+        net = gross - vat
+        b = by_rate.setdefault(rate, {"rate": rate, "gross": 0.0, "net": 0.0, "vat": 0.0, "count": 0})
+        b["gross"] += gross
+        b["net"] += net
+        b["vat"] += vat
+        b["count"] += 1
+    return by_rate
+
+
+@api_router.get("/reports/tax")
+async def tax_report(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    period: Optional[str] = None,  # YYYY-MM (monthly) or YYYY-Q1..Q4 (quarterly)
+):
+    today = datetime.now(timezone.utc).date()
+    # Resolve period shortcut
+    if period:
+        try:
+            if "-Q" in period:
+                y, q = period.split("-Q")
+                y, q = int(y), int(q)
+                start_m = (q - 1) * 3 + 1
+                start_date = date(y, start_m, 1).isoformat()
+                end_m = start_m + 2
+                # last day of end_m
+                if end_m == 12:
+                    end_date = date(y, 12, 31).isoformat()
+                else:
+                    end_date = (date(y, end_m + 1, 1) - timedelta(days=1)).isoformat()
+            else:
+                y, m = map(int, period.split("-"))
+                start_date = date(y, m, 1).isoformat()
+                if m == 12:
+                    end_date = date(y, 12, 31).isoformat()
+                else:
+                    end_date = (date(y, m + 1, 1) - timedelta(days=1)).isoformat()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Geçersiz dönem")
+    if not start_date:
+        start_date = today.replace(day=1).isoformat()
+    if not end_date:
+        end_date = today.isoformat()
+
+    uid = user.data_owner_id
+    incomes = [i for i in await db.incomes.find({"user_id": uid}, {"_id": 0}).to_list(5000)
+               if start_date <= i["date"] <= end_date]
+    expenses = [e for e in await db.expenses.find({"user_id": uid}, {"_id": 0}).to_list(5000)
+                if start_date <= e["date"] <= end_date]
+
+    inc_break = _compute_vat_breakdown(incomes)
+    exp_break = _compute_vat_breakdown(expenses)
+
+    inc_total = {"gross": sum(b["gross"] for b in inc_break.values()),
+                 "net": sum(b["net"] for b in inc_break.values()),
+                 "vat": sum(b["vat"] for b in inc_break.values())}
+    exp_total = {"gross": sum(b["gross"] for b in exp_break.values()),
+                 "net": sum(b["net"] for b in exp_break.values()),
+                 "vat": sum(b["vat"] for b in exp_break.values())}
+
+    # Hesaplanan KDV (income VAT), İndirilecek KDV (expense VAT), Ödenecek KDV (positive = pay, negative = refund)
+    payable_vat = inc_total["vat"] - exp_total["vat"]
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "period": period,
+        "income": {
+            "total_gross": round(inc_total["gross"], 2),
+            "total_net": round(inc_total["net"], 2),
+            "total_vat": round(inc_total["vat"], 2),
+            "count": len(incomes),
+            "breakdown": [{"rate": r, "gross": round(b["gross"], 2), "net": round(b["net"], 2),
+                           "vat": round(b["vat"], 2), "count": b["count"]}
+                          for r, b in sorted(inc_break.items())],
+        },
+        "expense": {
+            "total_gross": round(exp_total["gross"], 2),
+            "total_net": round(exp_total["net"], 2),
+            "total_vat": round(exp_total["vat"], 2),
+            "count": len(expenses),
+            "breakdown": [{"rate": r, "gross": round(b["gross"], 2), "net": round(b["net"], 2),
+                           "vat": round(b["vat"], 2), "count": b["count"]}
+                          for r, b in sorted(exp_break.items())],
+        },
+        "payable_vat": round(payable_vat, 2),
+        "vat_status": "pay" if payable_vat > 0 else ("refund" if payable_vat < 0 else "even"),
+    }
+
+
+@api_router.get("/reports/tax/pdf")
+async def tax_report_pdf(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    period: Optional[str] = None,
+):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    _register_pdf_font()
+    data = await tax_report(user=user, start_date=start_date, end_date=end_date, period=period)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontName="Vera-Bold", fontSize=20, textColor=colors.HexColor("#0F172A"), spaceAfter=6)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontName="Vera-Bold", fontSize=13, textColor=colors.HexColor("#0F172A"), spaceBefore=14, spaceAfter=6)
+    meta = ParagraphStyle("meta", parent=styles["BodyText"], fontName="Vera", fontSize=9, textColor=colors.HexColor("#64748B"))
+
+    story = []
+    story.append(Paragraph("KDV Beyan Özeti", h1))
+    story.append(Paragraph(
+        f"Dönem: <b>{data['start_date']}</b> — <b>{data['end_date']}</b> · Oluşturuldu: {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')}",
+        meta,
+    ))
+    story.append(Paragraph(f"Kullanıcı: {user.name} ({user.email})", meta))
+    story.append(Spacer(1, 0.5 * cm))
+
+    def _t_style():
+        return TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), "Vera"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Vera-Bold"),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E2E8F0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ])
+
+    # Summary row
+    summary = [["", "Matrah (KDV Hariç)", "KDV", "Brüt (KDV Dahil)", "Adet"]]
+    summary.append(["Gelir (Hesaplanan KDV)", _fmt_try(data["income"]["total_net"]),
+                    _fmt_try(data["income"]["total_vat"]),
+                    _fmt_try(data["income"]["total_gross"]),
+                    str(data["income"]["count"])])
+    summary.append(["Gider (İndirilecek KDV)", _fmt_try(data["expense"]["total_net"]),
+                    _fmt_try(data["expense"]["total_vat"]),
+                    _fmt_try(data["expense"]["total_gross"]),
+                    str(data["expense"]["count"])])
+    tbl = Table(summary, colWidths=[6 * cm, 3.5 * cm, 3.5 * cm, 3.5 * cm, 1.5 * cm])
+    tbl.setStyle(_t_style())
+    story.append(tbl)
+
+    story.append(Spacer(1, 0.4 * cm))
+    # VAT Payable
+    status_text = "Ödenecek KDV" if data["vat_status"] == "pay" else ("İade Alınacak KDV" if data["vat_status"] == "refund" else "Denk")
+    color = "#991B1B" if data["vat_status"] == "pay" else ("#166534" if data["vat_status"] == "refund" else "#0F172A")
+    pv = data["payable_vat"]
+    story.append(Table(
+        [[Paragraph(f"<b>{status_text}</b>", ParagraphStyle('x', fontName='Vera-Bold', fontSize=13, textColor=colors.HexColor('#0F172A'))),
+          Paragraph(f'<font color="{color}"><b>{_fmt_try(abs(pv))}</b></font>',
+                    ParagraphStyle('y', fontName='Vera-Bold', fontSize=13, alignment=2))]],
+        colWidths=[10 * cm, 8 * cm],
+        style=TableStyle([
+            ("BOX", (0, 0), (-1, -1), 1.0, colors.HexColor("#0F172A")),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F1F5F9")),
+            ("TOPPADDING", (0, 0), (-1, -1), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ])
+    ))
+
+    # Income breakdown
+    if data["income"]["breakdown"]:
+        story.append(Paragraph("Gelir KDV Kırılımı", h2))
+        rows = [["KDV Oranı", "Matrah", "KDV", "Brüt", "Adet"]]
+        for b in data["income"]["breakdown"]:
+            rows.append([f"%{b['rate']:g}", _fmt_try(b["net"]), _fmt_try(b["vat"]),
+                         _fmt_try(b["gross"]), str(b["count"])])
+        tbl = Table(rows, colWidths=[3 * cm, 4 * cm, 4 * cm, 4 * cm, 2 * cm])
+        tbl.setStyle(_t_style())
+        story.append(tbl)
+
+    # Expense breakdown
+    if data["expense"]["breakdown"]:
+        story.append(Paragraph("Gider KDV Kırılımı", h2))
+        rows = [["KDV Oranı", "Matrah", "KDV", "Brüt", "Adet"]]
+        for b in data["expense"]["breakdown"]:
+            rows.append([f"%{b['rate']:g}", _fmt_try(b["net"]), _fmt_try(b["vat"]),
+                         _fmt_try(b["gross"]), str(b["count"])])
+        tbl = Table(rows, colWidths=[3 * cm, 4 * cm, 4 * cm, 4 * cm, 2 * cm])
+        tbl.setStyle(_t_style())
+        story.append(tbl)
+
+    story.append(Spacer(1, 0.5 * cm))
+    story.append(Paragraph(
+        "<i>Not: Tutarlar KDV dahil brüt varsayılmıştır. Bu rapor bilgi amaçlıdır ve resmi beyan yerine geçmez.</i>",
+        meta,
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    filename = f"kdv-raporu-{data['start_date']}-{data['end_date']}.pdf"
+    return StreamingResponse(iter([buf.getvalue()]), media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@api_router.get("/reports/tax/xlsx")
+async def tax_report_xlsx(
+    user: User = Depends(get_current_user),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    period: Optional[str] = None,
+):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    data = await tax_report(user=user, start_date=start_date, end_date=end_date, period=period)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "KDV Özeti"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="0F172A")
+    right = Alignment(horizontal="right")
+
+    ws.append(["KDV Beyan Özeti"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([f"Dönem: {data['start_date']} - {data['end_date']}"])
+    ws.append([])
+
+    # Summary
+    for row_idx, row in enumerate([
+        ["", "Matrah", "KDV", "Brüt", "Adet"],
+        ["Gelir", data["income"]["total_net"], data["income"]["total_vat"], data["income"]["total_gross"], data["income"]["count"]],
+        ["Gider", data["expense"]["total_net"], data["expense"]["total_vat"], data["expense"]["total_gross"], data["expense"]["count"]],
+    ]):
+        ws.append(row)
+        if row_idx == 0:
+            for c in ws[ws.max_row]:
+                c.font = header_font
+                c.fill = header_fill
+                c.alignment = right
+
+    ws.append([])
+    ws.append(["Ödenecek/İade KDV", data["payable_vat"]])
+    ws[f"A{ws.max_row}"].font = Font(bold=True)
+
+    ws.append([])
+    ws.append(["Gelir KDV Kırılımı"])
+    ws[f"A{ws.max_row}"].font = Font(bold=True)
+    ws.append(["KDV Oranı", "Matrah", "KDV", "Brüt", "Adet"])
+    for c in ws[ws.max_row]:
+        c.font = header_font
+        c.fill = header_fill
+    for b in data["income"]["breakdown"]:
+        ws.append([f"%{b['rate']:g}", b["net"], b["vat"], b["gross"], b["count"]])
+
+    ws.append([])
+    ws.append(["Gider KDV Kırılımı"])
+    ws[f"A{ws.max_row}"].font = Font(bold=True)
+    ws.append(["KDV Oranı", "Matrah", "KDV", "Brüt", "Adet"])
+    for c in ws[ws.max_row]:
+        c.font = header_font
+        c.fill = header_fill
+    for b in data["expense"]["breakdown"]:
+        ws.append([f"%{b['rate']:g}", b["net"], b["vat"], b["gross"], b["count"]])
+
+    for i, w in enumerate([22, 18, 18, 18, 12], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"kdv-raporu-{data['start_date']}-{data['end_date']}.xlsx"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ---------------- Excel/CSV Import ----------------
 IMPORT_SCHEMAS = {
     "expenses": {
         "collection": "expenses",
-        "columns": ["category", "description", "amount", "date"],
+        "columns": ["category", "description", "amount", "vat_rate", "date"],
         "required": ["category", "description", "amount", "date"],
-        "amount_fields": ["amount"],
+        "amount_fields": ["amount", "vat_rate"],
         "date_fields": ["date"],
-        "sample_row": ["Kira", "Ofis kirası Şubat", "12500.00", "2026-02-01"],
+        "sample_row": ["Kira", "Ofis kirası Şubat", "12500.00", "20", "2026-02-01"],
     },
     "incomes": {
         "collection": "incomes",
-        "columns": ["source", "description", "amount", "date"],
+        "columns": ["source", "description", "amount", "vat_rate", "date"],
         "required": ["source", "amount", "date"],
-        "amount_fields": ["amount"],
+        "amount_fields": ["amount", "vat_rate"],
         "date_fields": ["date"],
-        "sample_row": ["Satış", "Ürün satışı", "45000.00", "2026-02-05"],
+        "sample_row": ["Satış", "Ürün satışı", "45000.00", "20", "2026-02-05"],
     },
     "checks": {
         "collection": "checks",
@@ -1238,7 +1532,13 @@ async def import_file(resource: str, file: UploadFile = File(...), user: User = 
                 if v is None or (isinstance(v, str) and v.strip() == ""):
                     if col in schema["required"]:
                         raise ValueError(f"'{col}' zorunlu")
-                    record[col] = "" if col not in schema["amount_fields"] else 0.0
+                    # Sensible defaults for optional fields
+                    if col == "vat_rate":
+                        record[col] = 20.0
+                    elif col in schema["amount_fields"]:
+                        record[col] = 0.0
+                    else:
+                        record[col] = ""
                     continue
                 if col in schema["amount_fields"]:
                     try:

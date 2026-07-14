@@ -17,7 +17,8 @@ import { Plus, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 const EXPENSE_CATEGORIES = ["Kira", "Personel", "Vergi", "Elektrik", "Su", "Doğalgaz", "İnternet", "Malzeme", "Nakliye", "Pazarlama", "Yakıt", "Diğer"];
-const empty = { category: "Diğer", description: "", amount: 0, date: new Date().toISOString().slice(0, 10) };
+const VAT_RATES = [0, 1, 10, 20];
+const empty = { category: "Diğer", description: "", amount: 0, vat_rate: 20, date: new Date().toISOString().slice(0, 10) };
 
 export default function Expenses() {
   const [items, setItems] = useState([]);
@@ -76,8 +77,17 @@ export default function Expenses() {
                     </Select>
                   </div>
                   <div><Label>Açıklama</Label><Input data-testid="expense-description-input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div><Label>Tutar (₺)</Label><Input data-testid="expense-amount-input" type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
+                    <div>
+                      <Label>KDV %</Label>
+                      <Select value={String(form.vat_rate)} onValueChange={(v) => setForm({ ...form, vat_rate: Number(v) })}>
+                        <SelectTrigger data-testid="expense-vat-select"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {VAT_RATES.map((r) => <SelectItem key={r} value={String(r)}>{r === 0 ? "KDV'siz" : `%${r}`}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div><Label>Tarih</Label><Input data-testid="expense-date-input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
                   </div>
                 </div>

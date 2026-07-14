@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 6 (KDV/Tax Report) tested. 10/10 backend pytest tests pass covering period parsing, math (17500@20% -> vat 2916.67, net 14583.33), multi-rate breakdown, custom range, pay/refund/even status, PDF/xlsx exports, import template vat_rate column, and auth. Frontend /tax-report page renders with mode/month/quarter selectors, summary cards (calc-vat, deductible-vat, payable-vat) and PDF/Excel buttons all wired. Sidebar nav-tax-report link works. CRITICAL BUG found on /incomes page: Select components were used but not imported causing full page crash 'ReferenceError: Select is not defined'. Fixed by adding missing import in Incomes.jsx.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Incomes.jsx", "issue": "Select/SelectContent/SelectItem/SelectTrigger/SelectValue used but not imported from @/components/ui/select. Entire /incomes page crashed with ReferenceError: Select is not defined. Fixed by testing agent.", "selector": "/incomes route", "priority": "CRITICAL"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "TaxReport / dialogs", "issues": ["Radix warning: Missing Description/aria-describedby for DialogContent (pre-existing a11y minor)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_tax_report.py",
+    "/app/test_reports/pytest/iter6_tax.xml"
+  ],
+  "action_items": [
+    "Verify Incomes.jsx import fix (already applied). Consider adding an ESLint rule or CI lint step to catch missing React imports; this bug shipped despite basic linting.",
+    "Optional: verify TaxReport UI shows non-zero values after creating expenses/incomes in current period (backend math already verified via pytest).",
+    "Optional: add DialogDescription to dialogs to silence Radix a11y warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown to 1837 lines - urgently split into modules (auth/reports/import/notifications/tax) for maintainability.",
+    "_compute_vat_breakdown treats missing vat_rate as 0 (`float(it.get('vat_rate') or 0)`) instead of the model default 20. This works because Pydantic default is applied on read for API responses, but if a legacy Mongo doc has vat_rate missing and is aggregated raw (bypassing Pydantic), it would be counted at 0%. Consider defaulting to 20 explicitly in the aggregation.",
+    "Tax endpoints have no upper bound on date range; `find(...).to_list(5000)` can silently truncate at 5000 records for large tenants.",
+    "The /reports/tax response does not include the currency; frontend assumes TRY. Fine for now but document.",
+    "Frontend/pages/Incomes.jsx missed adding the Select import when vat_rate select was added — indicative of a missed lint step in the dev workflow."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_tax_report.py (new)",
+    "/app/frontend/src/pages/Incomes.jsx (added missing Select imports to fix runtime crash)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "95% (all 6 flows OK after 1 fix)"},
+  "test_credentials": "session_token=test_session_tax_1784007253111, user_id=test-tax-1784007253111 (7d expiry). Send as cookie session_token or Authorization: Bearer.",
+  "seed_data_creation": "Pytest fixture creates TEST_TAX_* records in incomes/expenses for July 2026 and cleans up on teardown. One TEST_TAX_refund expense also created/deleted in test_refund_status.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_tax_report.py. Run with: REACT_APP_BACKEND_URL=... TEST_SESSION_TOKEN=... pytest backend/tests/test_tax_report.py -o addopts='' (pytest.ini uses xdist which is loadscope; passing -o addopts='' disables it for direct run). Frontend: /tax-report route, testids tax-report-page, tax-mode-select (month/quarter/custom), tax-month-select, tax-quarter-select, tax-pdf-btn, tax-xlsx-btn, calc-vat, deductible-vat, payable-vat. Vat select testids: expense-vat-select, income-vat-select. Sidebar link nav-tax-report.",
+  "rca of the issue": "Bug: /incomes page crashed with 'Select is not defined'. Root cause: Iteration 6 added a <Select> vat_rate picker inside Incomes.jsx dialog but the developer forgot to add `import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'`. Fix applied by testing agent at line 12 of Incomes.jsx. Verified via Playwright: /incomes now renders, dialog opens, income-vat-select shows options KDV'siz / %1 / %10 / %20 with %20 default."
+}

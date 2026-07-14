@@ -13,6 +13,7 @@ import {
   LogOut,
   Settings as SettingsIcon,
   Users,
+  Scale,
 } from "lucide-react";
 
 const NAV = [
@@ -23,6 +24,7 @@ const NAV = [
   { to: "/notes", label: "Senetler", icon: ScrollText, testid: "nav-notes" },
   { to: "/expenses", label: "Giderler", icon: Receipt, testid: "nav-expenses" },
   { to: "/incomes", label: "Gelirler", icon: TrendingUp, testid: "nav-incomes" },
+  { to: "/tax-report", label: "KDV Raporu", icon: Scale, testid: "nav-tax-report" },
   { to: "/team", label: "Ekip", icon: Users, testid: "nav-team" },
   { to: "/settings", label: "Ayarlar", icon: SettingsIcon, testid: "nav-settings" },
 ];
