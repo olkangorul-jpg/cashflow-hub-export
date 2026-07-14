@@ -744,13 +744,13 @@ async def delete_income(income_id: str, user: User = Depends(get_current_user)):
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(user: User = Depends(get_current_user)):
     uid = user.data_owner_id
-    accounts = await db.bank_accounts.find({"user_id": uid}, {"_id": 0}).to_list(1000)
+    accounts = await db.bank_accounts.find({"user_id": uid}, {"_id": 0, "balance": 1}).to_list(1000)
     total_balance = sum(a.get("balance", 0.0) for a in accounts)
 
-    checks = await db.checks.find({"user_id": uid}, {"_id": 0}).to_list(2000)
-    notes = await db.promissory_notes.find({"user_id": uid}, {"_id": 0}).to_list(2000)
-    expenses = await db.expenses.find({"user_id": uid}, {"_id": 0}).to_list(2000)
-    incomes = await db.incomes.find({"user_id": uid}, {"_id": 0}).to_list(2000)
+    checks = await db.checks.find({"user_id": uid}, {"_id": 0, "id": 1, "type": 1, "status": 1, "amount": 1, "due_date": 1, "party": 1}).to_list(2000)
+    notes = await db.promissory_notes.find({"user_id": uid}, {"_id": 0, "id": 1, "type": 1, "status": 1, "amount": 1, "due_date": 1, "party": 1}).to_list(2000)
+    expenses = await db.expenses.find({"user_id": uid}, {"_id": 0, "amount": 1, "date": 1, "category": 1}).to_list(2000)
+    incomes = await db.incomes.find({"user_id": uid}, {"_id": 0, "amount": 1, "date": 1}).to_list(2000)
 
     now = datetime.now(timezone.utc).date()
     horizon = now + timedelta(days=30)
