@@ -293,6 +293,21 @@ def require_write(user: User):
         raise HTTPException(status_code=403, detail="Bu workspace'de salt okur yetkiniz var")
 
 
+async def _apply_balance_delta(bank_account_id: Optional[str], delta: float, owner_id: str) -> None:
+    """Atomically add `delta` to a bank account's balance.
+
+    Positive delta = income received / expense reversed (money in).
+    Negative delta = expense paid / income reversed (money out).
+    Silently skips when no bank_account_id is provided or account not found.
+    """
+    if not bank_account_id or delta == 0:
+        return
+    await db.bank_accounts.update_one(
+        {"id": bank_account_id, "user_id": owner_id},
+        {"$inc": {"balance": delta}},
+    )
+
+
 # ---------------- Auth Routes ----------------
 class SessionExchange(BaseModel):
     session_id: str
@@ -694,18 +709,25 @@ async def create_expense(payload: ExpenseCreate, user: User = Depends(get_curren
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.expenses.insert_one(d)
+    await _apply_balance_delta(obj.bank_account_id, -obj.amount, user.data_owner_id)
     return obj
 
 
 @api_router.put("/expenses/{expense_id}", response_model=Expense)
 async def update_expense(expense_id: str, payload: ExpenseCreate, user: User = Depends(get_current_user)):
     require_write(user)
+    old = await db.expenses.find_one({"id": expense_id, "user_id": user.data_owner_id}, {"_id": 0})
+    if not old:
+        raise HTTPException(status_code=404, detail="Not found")
     res = await db.expenses.update_one(
         {"id": expense_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    # Reverse old effect, apply new effect
+    await _apply_balance_delta(old.get("bank_account_id"), float(old.get("amount", 0)), user.data_owner_id)
+    await _apply_balance_delta(payload.bank_account_id, -float(payload.amount), user.data_owner_id)
     doc = await db.expenses.find_one({"id": expense_id}, {"_id": 0})
     return Expense(**doc)
 
@@ -713,7 +735,10 @@ async def update_expense(expense_id: str, payload: ExpenseCreate, user: User = D
 @api_router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str, user: User = Depends(get_current_user)):
     require_write(user)
+    old = await db.expenses.find_one({"id": expense_id, "user_id": user.data_owner_id}, {"_id": 0})
     await db.expenses.delete_one({"id": expense_id, "user_id": user.data_owner_id})
+    if old:
+        await _apply_balance_delta(old.get("bank_account_id"), float(old.get("amount", 0)), user.data_owner_id)
     return {"ok": True}
 
 
@@ -742,18 +767,24 @@ async def create_income(payload: IncomeCreate, user: User = Depends(get_current_
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
     await db.incomes.insert_one(d)
+    await _apply_balance_delta(obj.bank_account_id, obj.amount, user.data_owner_id)
     return obj
 
 
 @api_router.put("/incomes/{income_id}", response_model=Income)
 async def update_income(income_id: str, payload: IncomeCreate, user: User = Depends(get_current_user)):
     require_write(user)
+    old = await db.incomes.find_one({"id": income_id, "user_id": user.data_owner_id}, {"_id": 0})
+    if not old:
+        raise HTTPException(status_code=404, detail="Not found")
     res = await db.incomes.update_one(
         {"id": income_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    await _apply_balance_delta(old.get("bank_account_id"), -float(old.get("amount", 0)), user.data_owner_id)
+    await _apply_balance_delta(payload.bank_account_id, float(payload.amount), user.data_owner_id)
     doc = await db.incomes.find_one({"id": income_id}, {"_id": 0})
     return Income(**doc)
 
@@ -761,7 +792,10 @@ async def update_income(income_id: str, payload: IncomeCreate, user: User = Depe
 @api_router.delete("/incomes/{income_id}")
 async def delete_income(income_id: str, user: User = Depends(get_current_user)):
     require_write(user)
+    old = await db.incomes.find_one({"id": income_id, "user_id": user.data_owner_id}, {"_id": 0})
     await db.incomes.delete_one({"id": income_id, "user_id": user.data_owner_id})
+    if old:
+        await _apply_balance_delta(old.get("bank_account_id"), -float(old.get("amount", 0)), user.data_owner_id)
     return {"ok": True}
 
 

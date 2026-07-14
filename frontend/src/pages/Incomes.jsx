@@ -15,11 +15,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Plus, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
-const empty = { source: "", description: "", amount: 0, vat_rate: 20, date: new Date().toISOString().slice(0, 10) };
+const empty = { source: "", description: "", amount: 0, vat_rate: 20, date: new Date().toISOString().slice(0, 10), bank_account_id: null };
 const VAT_RATES = [0, 1, 10, 20];
+const NONE_ACCOUNT = "__none__";
 
 export default function Incomes() {
   const [items, setItems] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
   const [editing, setEditing] = useState(null);
@@ -29,20 +31,26 @@ export default function Incomes() {
     const params = {};
     if (range.startDate) params.start_date = range.startDate;
     if (range.endDate) params.end_date = range.endDate;
-    const { data } = await api.get("/incomes", { params });
+    const [{ data }, { data: accts }] = await Promise.all([
+      api.get("/incomes", { params }),
+      api.get("/bank-accounts"),
+    ]);
     setItems(data);
+    setAccounts(accts);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [range.startDate, range.endDate]);
 
   const submit = async () => {
     if (!form.source || !form.amount) return toast.error("Zorunlu alanları doldurun");
-    const payload = { ...form, amount: Number(form.amount) };
-    if (editing) { await api.put(`/incomes/${editing.id}`, payload); toast.success("Gelir güncellendi"); }
-    else { await api.post("/incomes", payload); toast.success("Gelir eklendi"); }
+    const payload = { ...form, amount: Number(form.amount), bank_account_id: form.bank_account_id || null };
+    if (editing) { await api.put(`/incomes/${editing.id}`, payload); toast.success("Gelir güncellendi, banka bakiyesi işlendi"); }
+    else { await api.post("/incomes", payload); toast.success("Gelir eklendi, banka bakiyesi güncellendi"); }
     setOpen(false); setEditing(null); setForm(empty); load();
   };
-  const remove = async (id) => { await api.delete(`/incomes/${id}`); toast.success("Silindi"); load(); };
-  const openEdit = (row) => { setEditing(row); setForm(row); setOpen(true); };
+  const remove = async (id) => { await api.delete(`/incomes/${id}`); toast.success("Silindi, bakiye iade edildi"); load(); };
+  const openEdit = (row) => { setEditing(row); setForm({ ...empty, ...row, bank_account_id: row.bank_account_id || null }); setOpen(true); };
+
+  const accountName = (id) => accounts.find((a) => a.id === id)?.name || "-";
 
   const total = items.reduce((s, i) => s + i.amount, 0);
 
@@ -80,6 +88,22 @@ export default function Incomes() {
                     </div>
                     <div><Label>Tarih</Label><Input data-testid="income-date-input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
                   </div>
+                  <div>
+                    <Label>Banka Hesabı (opsiyonel)</Label>
+                    <Select
+                      value={form.bank_account_id || NONE_ACCOUNT}
+                      onValueChange={(v) => setForm({ ...form, bank_account_id: v === NONE_ACCOUNT ? null : v })}
+                    >
+                      <SelectTrigger data-testid="income-bank-account-select"><SelectValue placeholder="Nakit / Hesap seçmedim" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE_ACCOUNT}>Nakit / Hesap seçmedim</SelectItem>
+                        {accounts.map((a) => (
+                          <SelectItem key={a.id} value={a.id}>{a.name} — {a.bank_name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-slate-500 mt-1">Seçerseniz tutar bu hesabın bakiyesine otomatik eklenir.</p>
+                  </div>
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setOpen(false)}>İptal</Button>
@@ -113,6 +137,7 @@ export default function Incomes() {
               <TableRow className="hover:bg-transparent">
                 <TableHead>Kaynak</TableHead>
                 <TableHead>Açıklama</TableHead>
+                <TableHead>Banka Hesabı</TableHead>
                 <TableHead>Tarih</TableHead>
                 <TableHead className="text-right">Tutar</TableHead>
                 <TableHead className="w-24"></TableHead>
@@ -120,11 +145,12 @@ export default function Incomes() {
             </TableHeader>
             <TableBody>
               {items.length === 0 ? (
-                <TableRow><TableCell colSpan={5} className="text-center py-12 text-slate-500">Henüz gelir eklenmedi.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={6} className="text-center py-12 text-slate-500">Henüz gelir eklenmedi.</TableCell></TableRow>
               ) : items.map((i) => (
                 <TableRow key={i.id} data-testid={`income-row-${i.id}`}>
                   <TableCell className="font-medium">{i.source}</TableCell>
                   <TableCell className="text-slate-600">{i.description || "-"}</TableCell>
+                  <TableCell className="text-slate-600 text-sm">{i.bank_account_id ? accountName(i.bank_account_id) : <span className="text-slate-400">Nakit</span>}</TableCell>
                   <TableCell className="text-slate-600 text-sm">{formatDate(i.date)}</TableCell>
                   <TableCell className="text-right tabular-nums font-semibold text-emerald-800">{formatTRY(i.amount)}</TableCell>
                   <TableCell>
