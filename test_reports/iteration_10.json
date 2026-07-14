@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 10 - role-based authorization verification. Seeded 3 users (owner, editor, viewer) sharing 1 workspace and tested every write and representative read endpoints via direct backend API calls (bypassing frontend). 34/35 tests passed. One critical gap remains: POST /api/incomes does NOT enforce require_write, so a viewer can still create income rows in the shared workspace's data.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/incomes",
+        "issue": "Missing require_write(user). Viewer role receives HTTP 200 and can insert income records into owner's workspace. All other 34 write/restore/import endpoints correctly return 403 with Turkish detail 'Bu workspace'de salt okur yetkiniz var'.",
+        "priority": "CRITICAL",
+        "location": "/app/backend/server.py line 738-744 (create_income). Compare to create_expense at line 690 which has the check.",
+        "fix": "Add `require_write(user)` as the first line inside create_income() body."
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_role_authorization.py",
+    "/app/test_reports/pytest/iter10_results.xml"
+  ],
+  "action_items": [
+    "Add `require_write(user)` at the top of create_income (server.py ~line 740) — one-line fix identical to create_expense pattern.",
+    "After fix, re-run: pytest backend/tests/test_role_authorization.py -n 0 (should be 35/35 green)."
+  ],
+  "critical_code_review_comments": [
+    "Role gating is applied ad-hoc per endpoint via require_write(); a router-level dependency (e.g. Depends(require_write_user)) or a decorator would eliminate the exact type of miss found here.",
+    "server.py is 2212 lines - refactor into modules (auth, workspaces, resources, backups, imports) to keep future authorization changes auditable.",
+    "Backups restore endpoints use an inline `if user.role == 'viewer'` check instead of the shared require_write() helper (server.py 1512, 1547). Works, but consistency + single source of truth is preferable."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_role_authorization.py (new)"
+  ],
+  "success_rate": {"backend": "97% (34/35)", "frontend": "not tested"},
+  "test_credentials": "Seeded directly in Mongo (see fixture in test_role_authorization.py): TEST_ROLES_owner / TEST_ROLES_editor / TEST_ROLES_viewer with session tokens TEST_ROLES_tok_owner / _editor / _viewer. Workspace TEST_ROLES_ws_1. Auto-cleaned on session teardown.",
+  "seed_data_creation": "3 users, 1 workspace, 2 workspace_members (editor + viewer, both status=active), 3 user_sessions (24h TTL). Cleaned up in fixture teardown.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Test suite /app/backend/tests/test_role_authorization.py is idempotent (cleans before + after). Run with `pytest backend/tests/test_role_authorization.py -n 0`. Once the create_income fix is applied, all 35 tests should pass. The fixture uses run_until_complete(); if you extend it, keep the async setup/teardown pattern.",
+  "rca of the issue": "Main agent applied require_write to update_income and delete_income but missed create_income. Root cause: manual per-endpoint patching without a checklist or shared dependency. Reproduction: POST {BASE_URL}/api/incomes with a session token belonging to a workspace_members entry role='viewer' -> returns 200 instead of 403. Mitigation: (a) one-line addition of require_write(user) in create_income; (b) longer-term switch to FastAPI dependency injection like `user: User = Depends(require_write_user)` so authorization is declarative and impossible to forget."
+}

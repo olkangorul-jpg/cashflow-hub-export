@@ -545,6 +545,7 @@ async def list_bank_accounts(user: User = Depends(get_current_user)):
 
 @api_router.post("/bank-accounts", response_model=BankAccount)
 async def create_bank_account(payload: BankAccountCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     obj = BankAccount(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
@@ -554,6 +555,7 @@ async def create_bank_account(payload: BankAccountCreate, user: User = Depends(g
 
 @api_router.put("/bank-accounts/{account_id}", response_model=BankAccount)
 async def update_bank_account(account_id: str, payload: BankAccountCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     res = await db.bank_accounts.update_one(
         {"id": account_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
@@ -566,6 +568,7 @@ async def update_bank_account(account_id: str, payload: BankAccountCreate, user:
 
 @api_router.delete("/bank-accounts/{account_id}")
 async def delete_bank_account(account_id: str, user: User = Depends(get_current_user)):
+    require_write(user)
     await db.bank_accounts.delete_one({"id": account_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
@@ -590,6 +593,7 @@ async def list_checks(
 
 @api_router.post("/checks", response_model=Check)
 async def create_check(payload: CheckCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     obj = Check(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
@@ -599,6 +603,7 @@ async def create_check(payload: CheckCreate, user: User = Depends(get_current_us
 
 @api_router.put("/checks/{check_id}", response_model=Check)
 async def update_check(check_id: str, payload: CheckCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     res = await db.checks.update_one(
         {"id": check_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
@@ -611,6 +616,7 @@ async def update_check(check_id: str, payload: CheckCreate, user: User = Depends
 
 @api_router.delete("/checks/{check_id}")
 async def delete_check(check_id: str, user: User = Depends(get_current_user)):
+    require_write(user)
     await db.checks.delete_one({"id": check_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
@@ -635,6 +641,7 @@ async def list_notes(
 
 @api_router.post("/promissory-notes", response_model=PromissoryNote)
 async def create_note(payload: PromissoryNoteCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     obj = PromissoryNote(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
@@ -644,6 +651,7 @@ async def create_note(payload: PromissoryNoteCreate, user: User = Depends(get_cu
 
 @api_router.put("/promissory-notes/{note_id}", response_model=PromissoryNote)
 async def update_note(note_id: str, payload: PromissoryNoteCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     res = await db.promissory_notes.update_one(
         {"id": note_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
@@ -656,6 +664,7 @@ async def update_note(note_id: str, payload: PromissoryNoteCreate, user: User = 
 
 @api_router.delete("/promissory-notes/{note_id}")
 async def delete_note(note_id: str, user: User = Depends(get_current_user)):
+    require_write(user)
     await db.promissory_notes.delete_one({"id": note_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
@@ -680,6 +689,7 @@ async def list_expenses(
 
 @api_router.post("/expenses", response_model=Expense)
 async def create_expense(payload: ExpenseCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     obj = Expense(user_id=user.data_owner_id, **payload.model_dump())
     d = obj.model_dump()
     d["created_at"] = d["created_at"].isoformat()
@@ -689,6 +699,7 @@ async def create_expense(payload: ExpenseCreate, user: User = Depends(get_curren
 
 @api_router.put("/expenses/{expense_id}", response_model=Expense)
 async def update_expense(expense_id: str, payload: ExpenseCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     res = await db.expenses.update_one(
         {"id": expense_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
@@ -701,6 +712,7 @@ async def update_expense(expense_id: str, payload: ExpenseCreate, user: User = D
 
 @api_router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str, user: User = Depends(get_current_user)):
+    require_write(user)
     await db.expenses.delete_one({"id": expense_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
@@ -734,6 +746,7 @@ async def create_income(payload: IncomeCreate, user: User = Depends(get_current_
 
 @api_router.put("/incomes/{income_id}", response_model=Income)
 async def update_income(income_id: str, payload: IncomeCreate, user: User = Depends(get_current_user)):
+    require_write(user)
     res = await db.incomes.update_one(
         {"id": income_id, "user_id": user.data_owner_id},
         {"$set": payload.model_dump()},
@@ -746,6 +759,7 @@ async def update_income(income_id: str, payload: IncomeCreate, user: User = Depe
 
 @api_router.delete("/incomes/{income_id}")
 async def delete_income(income_id: str, user: User = Depends(get_current_user)):
+    require_write(user)
     await db.incomes.delete_one({"id": income_id, "user_id": user.data_owner_id})
     return {"ok": True}
 
@@ -1445,6 +1459,7 @@ async def _create_backup(user_id: str, workspace_id: str, kind: str = "manual") 
 
 @api_router.post("/backups")
 async def create_backup(user: User = Depends(get_current_user)):
+    require_write(user)
     b = await _create_backup(user.data_owner_id, user.workspace_id, "manual")
     return b
 
@@ -1481,6 +1496,7 @@ async def download_backup(backup_id: str, user: User = Depends(get_current_user)
 
 @api_router.delete("/backups/{backup_id}")
 async def delete_backup(backup_id: str, user: User = Depends(get_current_user)):
+    require_write(user)
     res = await db.backups.delete_one({"id": backup_id, "workspace_id": user.workspace_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Yedek bulunamadı")
@@ -1701,6 +1717,7 @@ async def import_template(resource: str, user: User = Depends(get_current_user))
 
 @api_router.post("/import/{resource}")
 async def import_file(resource: str, file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    require_write(user)
     schema = IMPORT_SCHEMAS.get(resource)
     if not schema:
         raise HTTPException(status_code=404, detail="Bilinmeyen kaynak")
