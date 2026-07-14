@@ -35,6 +35,7 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "")
 TWILIO_WHATSAPP_SANDBOX_FROM = os.environ.get("TWILIO_WHATSAPP_SANDBOX_FROM", "")
 TWILIO_WHATSAPP_TEMPLATE_SID = os.environ.get("TWILIO_WHATSAPP_TEMPLATE_SID", "")
+TWILIO_WHATSAPP_WELCOME_TEMPLATE_SID = os.environ.get("TWILIO_WHATSAPP_WELCOME_TEMPLATE_SID", "")
 _twilio_client = None
 if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
     from twilio.rest import Client as _TwilioClient
@@ -1823,7 +1824,32 @@ async def update_preferences(payload: Preferences, user: User = Depends(get_curr
         "reminder_days": days,
         "notification_email": (payload.notification_email or "").strip() or None,
     }
-    await db.user_preferences.update_one({"user_id": user.user_id}, {"$set": {"user_id": user.user_id, **doc}}, upsert=True)
+
+    # Check if user is enabling WhatsApp for the first time to send welcome
+    previous = await db.user_preferences.find_one({"user_id": user.user_id}, {"_id": 0})
+    should_send_welcome = (
+        doc["whatsapp_enabled"] and wnum and
+        (not previous or not previous.get("welcome_sent"))
+    )
+
+    await db.user_preferences.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"user_id": user.user_id, **doc}},
+        upsert=True,
+    )
+
+    if should_send_welcome and TWILIO_WHATSAPP_WELCOME_TEMPLATE_SID:
+        ok = await _send_whatsapp(
+            wnum,
+            body=f"Nakit Akış'a hoş geldiniz {user.name}!",
+            template_vars={"1": (user.name or "değerli kullanıcı")[:60]},
+            template_sid=TWILIO_WHATSAPP_WELCOME_TEMPLATE_SID,
+        )
+        if ok:
+            await db.user_preferences.update_one(
+                {"user_id": user.user_id},
+                {"$set": {"welcome_sent": True, "welcome_sent_at": datetime.now(timezone.utc).isoformat()}},
+            )
     return Preferences(**doc)
 
 
@@ -1888,33 +1914,34 @@ async def _send_email(to: str, subject: str, html: str) -> bool:
         return False
 
 
-async def _send_whatsapp(to_number: str, body: str, template_vars: Optional[dict] = None) -> bool:
+async def _send_whatsapp(to_number: str, body: str, template_vars: Optional[dict] = None, template_sid: Optional[str] = None) -> bool:
     """Send WhatsApp message.
-    - If template_vars is provided AND TWILIO_WHATSAPP_TEMPLATE_SID is set → send via approved template (works outside 24h window).
+    - If template_vars is provided AND a template SID is available → send via approved template (works outside 24h window).
     - Else → freeform body (only works with sandbox or inside 24h customer service window).
     """
     if not _twilio_client or not TWILIO_WHATSAPP_FROM:
         logger.warning("Twilio not configured - skipping WhatsApp")
         return False
+    sid = template_sid or TWILIO_WHATSAPP_TEMPLATE_SID
     to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
     try:
         def _send():
-            if template_vars and TWILIO_WHATSAPP_TEMPLATE_SID:
+            if template_vars and sid:
                 import json as _json
                 return _twilio_client.messages.create(
                     from_=TWILIO_WHATSAPP_FROM,
                     to=to,
-                    content_sid=TWILIO_WHATSAPP_TEMPLATE_SID,
+                    content_sid=sid,
                     content_variables=_json.dumps(template_vars),
                 )
             return _twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=to, body=body)
         msg = await asyncio.to_thread(_send)
-        logger.info(f"WhatsApp sent to {to_number}: sid={msg.sid} template={bool(template_vars)}")
+        logger.info(f"WhatsApp sent to {to_number}: sid={msg.sid} template={bool(template_vars and sid)}")
         return True
     except Exception as e:
         logger.error(f"WhatsApp send failed to {to_number}: {e}")
         # If template fails (e.g., not approved yet), try freeform as fallback
-        if template_vars and TWILIO_WHATSAPP_TEMPLATE_SID:
+        if template_vars and sid:
             try:
                 def _fallback():
                     return _twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=to, body=body)
