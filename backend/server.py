@@ -33,6 +33,8 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+TWILIO_WHATSAPP_SANDBOX_FROM = os.environ.get("TWILIO_WHATSAPP_SANDBOX_FROM", "")
+TWILIO_WHATSAPP_TEMPLATE_SID = os.environ.get("TWILIO_WHATSAPP_TEMPLATE_SID", "")
 _twilio_client = None
 if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
     from twilio.rest import Client as _TwilioClient
@@ -1886,20 +1888,72 @@ async def _send_email(to: str, subject: str, html: str) -> bool:
         return False
 
 
-async def _send_whatsapp(to_number: str, body: str) -> bool:
+async def _send_whatsapp(to_number: str, body: str, template_vars: Optional[dict] = None) -> bool:
+    """Send WhatsApp message.
+    - If template_vars is provided AND TWILIO_WHATSAPP_TEMPLATE_SID is set → send via approved template (works outside 24h window).
+    - Else → freeform body (only works with sandbox or inside 24h customer service window).
+    """
     if not _twilio_client or not TWILIO_WHATSAPP_FROM:
         logger.warning("Twilio not configured - skipping WhatsApp")
         return False
     to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
     try:
         def _send():
+            if template_vars and TWILIO_WHATSAPP_TEMPLATE_SID:
+                import json as _json
+                return _twilio_client.messages.create(
+                    from_=TWILIO_WHATSAPP_FROM,
+                    to=to,
+                    content_sid=TWILIO_WHATSAPP_TEMPLATE_SID,
+                    content_variables=_json.dumps(template_vars),
+                )
             return _twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=to, body=body)
         msg = await asyncio.to_thread(_send)
-        logger.info(f"WhatsApp sent to {to_number}: sid={msg.sid}")
+        logger.info(f"WhatsApp sent to {to_number}: sid={msg.sid} template={bool(template_vars)}")
         return True
     except Exception as e:
         logger.error(f"WhatsApp send failed to {to_number}: {e}")
+        # If template fails (e.g., not approved yet), try freeform as fallback
+        if template_vars and TWILIO_WHATSAPP_TEMPLATE_SID:
+            try:
+                def _fallback():
+                    return _twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=to, body=body)
+                msg = await asyncio.to_thread(_fallback)
+                logger.info(f"WhatsApp fallback (freeform) sent to {to_number}: sid={msg.sid}")
+                return True
+            except Exception as e2:
+                logger.error(f"WhatsApp fallback also failed: {e2}")
         return False
+
+
+def _tr_amount(v: float) -> str:
+    s = f"{v:,.2f}"
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _tr_date(iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso).date()
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        return iso
+
+
+def _build_template_vars_for_item(user_name: str, item: dict) -> dict:
+    """Match template body:
+    Merhaba {{1}}, ödemenizin vadesine {{2}} gün kaldı: {{3}} ({{4}}) Tutar: {{5}} ₺ Vade: {{6}}
+    """
+    kind = "Çek" if item["kind"] == "check" else "Senet"
+    direction = "Alınan" if item["type"] == "received" else "Verilen"
+    kind_label = f"{direction} {kind}"
+    return {
+        "1": user_name,
+        "2": str(item["days_before"]),
+        "3": item["party"][:60],
+        "4": kind_label,
+        "5": _tr_amount(item["amount"]),
+        "6": _tr_date(item["due_date"]),
+    }
 
 
 def _render_whatsapp_text(user_name: str, items: List[dict]) -> str:
@@ -1986,8 +2040,16 @@ async def _run_reminders_for_user(user_doc: dict):
     whatsapp_sent = False
     wnum = prefs.get("whatsapp_number")
     if triggered and prefs.get("whatsapp_enabled") and wnum:
-        body = _render_whatsapp_text(user_doc.get("name") or "Kullanıcı", triggered)
-        whatsapp_sent = await _send_whatsapp(wnum, body)
+        # Send ONE template message per item (Meta template compliance)
+        # Also send a summary freeform (works if 24h customer service window is open, otherwise silently ignored)
+        sent_any = False
+        user_name = user_doc.get("name") or "Kullanıcı"
+        for it in triggered:
+            vars_ = _build_template_vars_for_item(user_name, it)
+            body = _render_whatsapp_text(user_name, [it])
+            if await _send_whatsapp(wnum, body, template_vars=vars_):
+                sent_any = True
+        whatsapp_sent = sent_any
     return {"created": len(triggered), "email_sent": email_sent, "whatsapp_sent": whatsapp_sent}
 
 
@@ -2047,10 +2109,17 @@ async def test_whatsapp(user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="WhatsApp numarası tanımlı değil. Ayarlar sayfasında ekleyin.")
     if not _twilio_client:
         raise HTTPException(status_code=500, detail="Twilio yapılandırılmamış (backend .env)")
-    body = f"✅ Nakit Akış — Test mesajı\n\nMerhaba {user.name}! WhatsApp bildirimleriniz aktif ve çalışıyor."
-    ok = await _send_whatsapp(wnum, body)
+    # Use template with sample values (works outside 24h window when approved)
+    sample_item = {
+        "kind": "check", "type": "issued", "party": "Test Firma A.Ş.",
+        "amount": 1234.56, "due_date": datetime.now(timezone.utc).date().isoformat(),
+        "days_before": 1,
+    }
+    vars_ = _build_template_vars_for_item(user.name or "Test", sample_item)
+    body = "Test WhatsApp mesajı - Nakit Akış"
+    ok = await _send_whatsapp(wnum, body, template_vars=vars_)
     if not ok:
-        raise HTTPException(status_code=502, detail="Mesaj gönderilemedi. Sandbox kullanıyorsanız numaranızın 'join' yaptığından emin olun.")
+        raise HTTPException(status_code=502, detail="Mesaj gönderilemedi. Template henüz Meta onayı almadıysa 1-24 saat bekleyin.")
     return {"ok": True, "to": wnum}
 
 
