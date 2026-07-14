@@ -493,8 +493,8 @@ async def invite_member(workspace_id: str, payload: InviteRequest, user: User = 
         })
 
     # Send invite email (best-effort)
-    invite_url = os.environ.get("APP_URL", "").rstrip("/") or ""
-    login_link = f"{invite_url}/login" if invite_url else "https://cashflow-hub-444.emergent.host/login"
+    invite_url = os.environ.get("APP_URL", "").rstrip("/")
+    login_link = f"{invite_url}/login" if invite_url else "/login"
     html = f"""
     <html><body style="margin:0;background:#F8F9FA;padding:24px;font-family:Arial,sans-serif;">
       <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #E2E8F0;border-radius:6px;">
