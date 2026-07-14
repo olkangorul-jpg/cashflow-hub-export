@@ -1,9 +1,7 @@
 import { useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 
 export default function AuthCallback() {
-  const navigate = useNavigate();
   const hasProcessed = useRef(false);
 
   useEffect(() => {
@@ -13,22 +11,21 @@ export default function AuthCallback() {
     const hash = window.location.hash || "";
     const match = hash.match(/session_id=([^&]+)/);
     if (!match) {
-      navigate("/login", { replace: true });
+      window.location.replace("/login");
       return;
     }
     const session_id = match[1];
 
     (async () => {
       try {
-        const { data } = await api.post("/auth/session", { session_id });
-        // Clean the hash
-        window.history.replaceState(null, "", "/dashboard");
-        navigate("/dashboard", { replace: true, state: { user: data } });
+        await api.post("/auth/session", { session_id });
+        // Full page reload so AuthContext re-mounts with fresh cookie state
+        window.location.replace("/dashboard");
       } catch (e) {
-        navigate("/login", { replace: true });
+        window.location.replace("/login");
       }
     })();
-  }, [navigate]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] flex items-center justify-center">

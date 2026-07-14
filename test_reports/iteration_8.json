@@ -1,0 +1,30 @@
+{
+  "summary": "Verified OAuth callback loop fix. Backend: 8/8 pytest cases pass (auth/me with valid/invalid/missing bearer + cookie, auth/session contract, pending-invite auto-accept, frontend fix file inspection). Frontend E2E: seeded a session_token cookie via Mongo + Playwright, navigated directly to /dashboard, confirmed no redirect to /login, workspace-switcher + dashboard-page + logout-button testids visible, /api/auth/me returned 200 with correct user + workspace_id + role. This proves the post-callback flow (which was broken by SPA navigate) now works end-to-end via window.location.replace.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard charts", "issues": ["Console warning: Recharts container width(-1)/height(-1) — cosmetic, chart still renders once dimensions resolve"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_callback_fix.py",
+    "/app/test_reports/pytest/iter8_auth_callback.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AuthCallback.jsx: fix is clean — uses window.location.replace, no useNavigate, hasProcessed ref prevents double session exchange under React StrictMode.",
+    "AuthContext.jsx: hash-skip guard prevents pre-exchange /auth/me from creating a spurious null-user state during callback; correct.",
+    "server.py line 326: A new user_sessions row is inserted on every /api/auth/session call (no upsert). If a user logs in repeatedly with same session_token from Emergent, this could create duplicates. Minor — sessions still resolve fine because find_one returns any match — but consider upserting on session_token to keep the collection clean.",
+    "server.py: no cleanup of expired sessions (get_current_user rejects them but they linger). Consider a TTL index on user_sessions.expires_at."
+  ],
+  "updated_files": ["/app/backend/tests/test_auth_callback_fix.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Seeded via mongosh at test-time; cleaned up after run. Pattern documented in /app/auth_testing.md.",
+  "seed_data_creation": "Test seeded TEST_-prefixed users, sessions, workspaces, workspace_members inside pytest fixtures with teardown; final mongosh cleanup deleted any residual TEST_ rows.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Auth callback loop bug is fixed and verified. Real OAuth exchange with a live Emergent session_id cannot be tested from this environment (needs Google login). All post-exchange behavior confirmed via seeded Mongo sessions. Test file /app/backend/tests/test_auth_callback_fix.py is reusable for regression on any auth changes.",
+  "rca of the issue": "AuthCallback previously used react-router navigate() which only updates SPA history without unmounting AuthProvider. AuthContext.user therefore stayed null (checkAuth had already skipped due to hash guard, and setLoading(false) left user=null). ProtectedRoute saw user===null and redirected to /login, whose useEffect on AuthContext caused another /auth/me→401 (no cookie yet visible until next request? actually cookie was set — but AuthContext never re-ran checkAuth after the exchange). Fix: window.location.replace('/dashboard') forces a full page reload, re-mounting AuthProvider which calls checkAuth() with the freshly-set httpOnly cookie → /auth/me returns 200 → user populated → ProtectedRoute allows /dashboard. Verified by full-reload simulation with pre-set cookie hitting /dashboard directly."
+}
