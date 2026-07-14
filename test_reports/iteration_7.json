@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 7 deployment-fix regression: 11/11 backend tests passed. Verified /api/dashboard/summary returns all correct fields/calculations after MongoDB projection changes, /api/workspaces/{id}/invite works with APP_URL unset (returns 'pending'), and /api/checks|/api/expenses|/api/incomes still return full records (projections applied ONLY to dashboard).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_dashboard_regression.py",
+    "/app/test_reports/pytest/iteration7_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 2185 lines - consider splitting into routers (dashboard, workspaces, checks, expenses, etc.) per the >700 line guideline.",
+    ".gitignore now allows .env in build context per the fix; ensure no real secrets end up committed - only .env for build should be tracked."
+  ],
+  "updated_files": ["/app/backend/tests/test_dashboard_regression.py"],
+  "success_rate": {"backend": "100%", "frontend": "N/A (not requested)"},
+  "test_credentials": "Test users created on-the-fly via mongosh-style inserts (see fixture _mk_user). Cleaned up on teardown.",
+  "seed_data_creation": "Fixture seeded_user creates: 2 bank_accounts (1000, 500.5), 4 checks (2 pending within 30d, 1 cleared, 1 past), 2 promissory_notes, 3 expenses (150 Ofis + 30 Yakit), 2 incomes (500 total). All prefixed TEST_ and deleted post-run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression suite at /app/backend/tests/test_dashboard_regression.py covers dashboard summary math, projection field integrity, invite w/o APP_URL. Reuse for future dashboard changes.",
+  "verified_calculations": {
+    "total_balance": "1500.5 (sum of bank_accounts.balance)",
+    "upcoming_incoming": "275.0 (200 check + 75 note, received pending within 30d)",
+    "upcoming_outgoing": "200.0 (150 check + 50 note, issued pending within 30d)",
+    "month_income": "500.0",
+    "month_expense": "180.0",
+    "categories": "TEST_Ofis=150, TEST_Yakit=30",
+    "monthly_array_length": 6,
+    "upcoming_list_filtering": "correctly excludes cleared and past-due items"
+  }
+}
