@@ -29,6 +29,15 @@ db = client[os.environ["DB_NAME"]]
 resend.api_key = os.environ.get("RESEND_API_KEY", "")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 
+# Twilio WhatsApp setup
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_FROM = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+_twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    from twilio.rest import Client as _TwilioClient
+    _twilio_client = _TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -1768,11 +1777,20 @@ class Preferences(BaseModel):
     model_config = ConfigDict(extra="ignore")
     email_enabled: bool = True
     in_app_enabled: bool = True
+    whatsapp_enabled: bool = False
+    whatsapp_number: Optional[str] = None
     reminder_days: List[int] = Field(default_factory=lambda: [3, 1])
     notification_email: Optional[str] = None
 
 
-DEFAULT_PREFS = {"email_enabled": True, "in_app_enabled": True, "reminder_days": [3, 1], "notification_email": None}
+DEFAULT_PREFS = {
+    "email_enabled": True,
+    "in_app_enabled": True,
+    "whatsapp_enabled": False,
+    "whatsapp_number": None,
+    "reminder_days": [3, 1],
+    "notification_email": None,
+}
 
 
 async def _get_prefs(user_id: str) -> dict:
@@ -1791,9 +1809,15 @@ async def get_preferences(user: User = Depends(get_current_user)):
 @api_router.put("/preferences", response_model=Preferences)
 async def update_preferences(payload: Preferences, user: User = Depends(get_current_user)):
     days = sorted({int(d) for d in payload.reminder_days if 0 < int(d) <= 60}) or [3, 1]
+    # Normalize phone number to E.164-ish (basic)
+    wnum = (payload.whatsapp_number or "").strip().replace(" ", "").replace("-", "")
+    if wnum and not wnum.startswith("+"):
+        wnum = "+" + wnum
     doc = {
         "email_enabled": bool(payload.email_enabled),
         "in_app_enabled": bool(payload.in_app_enabled),
+        "whatsapp_enabled": bool(payload.whatsapp_enabled),
+        "whatsapp_number": wnum or None,
         "reminder_days": days,
         "notification_email": (payload.notification_email or "").strip() or None,
     }
@@ -1862,6 +1886,36 @@ async def _send_email(to: str, subject: str, html: str) -> bool:
         return False
 
 
+async def _send_whatsapp(to_number: str, body: str) -> bool:
+    if not _twilio_client or not TWILIO_WHATSAPP_FROM:
+        logger.warning("Twilio not configured - skipping WhatsApp")
+        return False
+    to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
+    try:
+        def _send():
+            return _twilio_client.messages.create(from_=TWILIO_WHATSAPP_FROM, to=to, body=body)
+        msg = await asyncio.to_thread(_send)
+        logger.info(f"WhatsApp sent to {to_number}: sid={msg.sid}")
+        return True
+    except Exception as e:
+        logger.error(f"WhatsApp send failed to {to_number}: {e}")
+        return False
+
+
+def _render_whatsapp_text(user_name: str, items: List[dict]) -> str:
+    tr_type = {"received": "Alacak", "issued": "Borç"}
+    lines = [f"🔔 *Nakit Akış — Yaklaşan Ödemeler*", f"Merhaba {user_name}!", ""]
+    for it in items:
+        kind = "Çek" if it["kind"] == "check" else "Senet"
+        emoji = "🔴" if it["type"] == "issued" else "🟢"
+        lines.append(f"{emoji} *{it['party']}*")
+        lines.append(f"   {kind} · {tr_type.get(it['type'])} · {it['amount']:,.2f} ₺")
+        lines.append(f"   📅 {it['due_date']} · {it['days_before']} gün kaldı")
+        lines.append("")
+    lines.append("_Bu bildirim Nakit Akış tarafından otomatik gönderildi._")
+    return "\n".join(lines)
+
+
 REMINDER_DAYS = [3, 1]  # default fallback when user has no preferences
 
 
@@ -1928,7 +1982,13 @@ async def _run_reminders_for_user(user_doc: dict):
                 {"user_id": uid, "item_id": {"$in": item_ids}, "email_sent": False},
                 {"$set": {"email_sent": True}},
             )
-    return {"created": len(triggered), "email_sent": email_sent}
+
+    whatsapp_sent = False
+    wnum = prefs.get("whatsapp_number")
+    if triggered and prefs.get("whatsapp_enabled") and wnum:
+        body = _render_whatsapp_text(user_doc.get("name") or "Kullanıcı", triggered)
+        whatsapp_sent = await _send_whatsapp(wnum, body)
+    return {"created": len(triggered), "email_sent": email_sent, "whatsapp_sent": whatsapp_sent}
 
 
 async def _run_reminders_all_users():
@@ -1977,6 +2037,21 @@ async def check_reminders_now(user: User = Depends(get_current_user)):
     user_doc = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
     r = await _run_reminders_for_user(user_doc)
     return r
+
+
+@api_router.post("/notifications/test-whatsapp")
+async def test_whatsapp(user: User = Depends(get_current_user)):
+    prefs = await _get_prefs(user.user_id)
+    wnum = prefs.get("whatsapp_number")
+    if not wnum:
+        raise HTTPException(status_code=400, detail="WhatsApp numarası tanımlı değil. Ayarlar sayfasında ekleyin.")
+    if not _twilio_client:
+        raise HTTPException(status_code=500, detail="Twilio yapılandırılmamış (backend .env)")
+    body = f"✅ Nakit Akış — Test mesajı\n\nMerhaba {user.name}! WhatsApp bildirimleriniz aktif ve çalışıyor."
+    ok = await _send_whatsapp(wnum, body)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Mesaj gönderilemedi. Sandbox kullanıyorsanız numaranızın 'join' yaptığından emin olun.")
+    return {"ok": True, "to": wnum}
 
 
 app.include_router(api_router)

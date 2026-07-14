@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
-import { Mail, Bell, Calendar, Save } from "lucide-react";
+import { Mail, Bell, Calendar, Save, MessageCircle, Send } from "lucide-react";
 import { toast } from "sonner";
 
 const DAY_OPTIONS = [1, 3, 7, 14, 30];
@@ -14,6 +14,7 @@ const DAY_OPTIONS = [1, 3, 7, 14, 30];
 export default function Settings() {
   const [prefs, setPrefs] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [testingWa, setTestingWa] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -39,6 +40,19 @@ export default function Settings() {
       toast.error("Kaydedilemedi");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const testWhatsapp = async () => {
+    setTestingWa(true);
+    try {
+      await api.put("/preferences", prefs);
+      const { data } = await api.post("/notifications/test-whatsapp");
+      toast.success(`Test mesajı gönderildi: ${data.to}`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Test gönderilemedi");
+    } finally {
+      setTestingWa(false);
     }
   };
 
@@ -78,7 +92,7 @@ export default function Settings() {
                 />
               </div>
 
-              <div className="flex items-start justify-between gap-4 py-3">
+              <div className="flex items-start justify-between gap-4 py-3 border-b border-slate-200">
                 <div className="flex items-start gap-3">
                   <div className="h-9 w-9 rounded-md bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
                     <Mail className="h-4 w-4" strokeWidth={1.75} />
@@ -94,7 +108,56 @@ export default function Settings() {
                   onCheckedChange={(v) => setPrefs({ ...prefs, email_enabled: v })}
                 />
               </div>
+
+              <div className="flex items-start justify-between gap-4 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="h-9 w-9 rounded-md bg-green-100 text-green-800 flex items-center justify-center shrink-0">
+                    <MessageCircle className="h-4 w-4" strokeWidth={1.75} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">WhatsApp Bildirimi</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Twilio üzerinden anlık WhatsApp mesajı ile hatırlatma</p>
+                  </div>
+                </div>
+                <Switch
+                  data-testid="whatsapp-toggle"
+                  checked={!!prefs.whatsapp_enabled}
+                  onCheckedChange={(v) => setPrefs({ ...prefs, whatsapp_enabled: v })}
+                />
+              </div>
             </div>
+
+            {/* WhatsApp number */}
+            {prefs.whatsapp_enabled && (
+              <div className="p-4 bg-green-50/50 border border-green-200 rounded-md">
+                <Label className="text-xs uppercase tracking-[0.12em] font-semibold text-green-900">
+                  WhatsApp Numarası (E.164)
+                </Label>
+                <div className="flex gap-2 mt-2">
+                  <Input
+                    data-testid="whatsapp-number-input"
+                    type="tel"
+                    placeholder="+905321234567"
+                    value={prefs.whatsapp_number || ""}
+                    onChange={(e) => setPrefs({ ...prefs, whatsapp_number: e.target.value })}
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={testWhatsapp}
+                    disabled={!prefs.whatsapp_number || testingWa}
+                    data-testid="test-whatsapp-btn"
+                    className="border-green-600 text-green-700 hover:bg-green-50"
+                  >
+                    <Send className="h-4 w-4 mr-2" />
+                    {testingWa ? "Gönderiliyor..." : "Test Gönder"}
+                  </Button>
+                </div>
+                <div className="mt-3 p-3 bg-white border border-green-200 rounded-md text-xs text-slate-700 leading-relaxed">
+                  <strong className="text-green-900">⚠️ Sandbox Notu:</strong> Twilio test sandbox modunda mesaj almadan önce numaranızın <strong>join</strong> etmesi gerekir. WhatsApp'tan <strong>+1 415 523 8886</strong> numarasına Twilio Console'da size verilen kodu (örn: <em>"join happy-elephant"</em>) mesaj olarak gönderin. Daha sonra "Test Gönder" butonu ile doğrulayın.
+                </div>
+              </div>
+            )}
 
             {/* Custom email override */}
             {prefs.email_enabled && (
